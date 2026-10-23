@@ -1,4 +1,5 @@
 #include "cafe_compiler.h"
+#include "native_compute.h"
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
@@ -169,11 +170,12 @@ static bool AssignSamplerBindings(nir_shader *nir,
    std::array<bool, kMaxSamplers> used{};
 
    nir_foreach_variable_with_modes(variable, nir, nir_var_mem_ssbo) {
-      if (!(variable->data.access & ACCESS_NON_WRITEABLE)) {
+      if (nir->info.stage != MESA_SHADER_COMPUTE && !(variable->data.access & ACCESS_NON_WRITEABLE)) {
          diagnostics = "Latte buffer resources require readonly storage blocks";
          return false;
       }
-      used[variable->data.binding] = true;
+      if (!(variable->data.access & ACCESS_NON_READABLE))
+         used[variable->data.binding] = true;
    }
 
    nir_foreach_variable_with_modes(variable, nir, nir_var_uniform) {
@@ -1170,6 +1172,7 @@ struct CafeCompiler::CompileState {
    std::array<int, 32> attribute_locations{};
    std::unordered_map<std::string, unsigned> sampler_bindings;
    ReflectionInfo reflection;
+   GLSLComputeShader compute{};
 
    bool NeedsUniformBlockMode() const
    {
@@ -1229,6 +1232,7 @@ bool CafeCompiler::InitializeContext()
    InitializeR600NirOptions(*m_nir_options);
    m_ctx->screen->nir_options[MESA_SHADER_VERTEX] = m_nir_options;
    m_ctx->screen->nir_options[MESA_SHADER_FRAGMENT] = m_nir_options;
+   m_ctx->screen->nir_options[MESA_SHADER_COMPUTE] = m_nir_options;
 
    m_ctx->Version = 45;
    m_ctx->Extensions.Version = 45;
@@ -1271,7 +1275,7 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Const.MaxUserAssignableUniformLocations =
       4 * MESA_SHADER_MESH_STAGES * MAX_UNIFORMS;
 
-   for (mesa_shader_stage stage : {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT}) {
+   for (mesa_shader_stage stage : {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT, MESA_SHADER_COMPUTE}) {
       m_ctx->Const.Program[stage].MaxTextureImageUnits = kMaxSamplers;
       m_ctx->Const.Program[stage].MaxUniformBlocks = kMaxUniformBlocks;
       m_ctx->Const.Program[stage].MaxShaderStorageBlocks = kMaxReadonlyBuffers;
@@ -1284,6 +1288,18 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxInputComponents = 128;
    m_ctx->Const.MaxCombinedTextureImageUnits = kMaxSamplers * 2;
 
+   m_ctx->Const.MaxComputeWorkGroupInvocations = 1024;
+   m_ctx->Const.MaxComputeSharedMemorySize = 32768;
+   m_ctx->Const.MaxImageUnits = 16;
+   m_ctx->Const.MaxCombinedImageUniforms = 16;
+   m_ctx->Const.MaxCombinedShaderOutputResources = 32;
+   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxImageUniforms = 16;
+   for (unsigned i = 0; i < 3; ++i) {
+      m_ctx->Const.MaxComputeWorkGroupSize[i] = 1024;
+      m_ctx->Const.MaxComputeWorkGroupCount[i] = 65535;
+   }
+   m_ctx->Extensions.ARB_compute_shader = true;
+   m_ctx->Extensions.ARB_shader_image_load_store = true;
    m_ctx->Extensions.ARB_ES3_compatibility = true;
    m_ctx->Extensions.ARB_ES3_1_compatibility = true;
    m_ctx->Extensions.ARB_ES3_2_compatibility = true;
@@ -1321,7 +1337,7 @@ bool CafeCompiler::CompileFrontend(const char *source,
 
    const GLenum gl_shader_type = shader_type;
    state.stage = gl_shader_type == GL_VERTEX_SHADER ?
-      MESA_SHADER_VERTEX : MESA_SHADER_FRAGMENT;
+      MESA_SHADER_VERTEX : gl_shader_type == GL_COMPUTE_SHADER ? MESA_SHADER_COMPUTE : MESA_SHADER_FRAGMENT;
    state.shader_program = standalone_create_shader_program();
    state.shader_program->SeparateShader = true;
 
@@ -1475,17 +1491,24 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
    }
    NIR_PASS(_, state.nir, nir_opt_copy_prop);
    NIR_PASS(_, state.nir, nir_opt_constant_folding);
-   ReadonlyBufferState readonly_buffers{state.program, {}};
-   nir_shader_instructions_pass(state.nir, RemapReadonlyBuffer,
-                                nir_metadata_control_flow, &readonly_buffers);
-   if (!readonly_buffers.diagnostics.empty()) {
-      diagnostics = std::move(readonly_buffers.diagnostics);
-      return false;
+   if (state.stage != MESA_SHADER_COMPUTE) {
+      ReadonlyBufferState readonly_buffers{state.program, {}};
+      nir_shader_instructions_pass(state.nir, RemapReadonlyBuffer,
+                                  nir_metadata_control_flow, &readonly_buffers);
+      if (!readonly_buffers.diagnostics.empty()) {
+         diagnostics = std::move(readonly_buffers.diagnostics);
+         return false;
+      }
    }
    if (!RemapUbos(state.nir, state.ubo_bindings, diagnostics))
       return false;
 
+   if (state.stage == MESA_SHADER_COMPUTE &&
+       !LowerNativeCompute(state.nir, state.program, state.compute, diagnostics))
+      return false;
    NIR_PASS(_, state.nir, gl_nir_lower_samplers, nullptr);
+   if (state.stage == MESA_SHADER_COMPUTE && !LowerNativeComputeGathers(state.nir, diagnostics))
+      return false;
    nir_shader_gather_info(state.nir, nir_shader_get_entrypoint(state.nir));
    r600_finalize_nir_common(state.nir, R700);
    return true;
@@ -1543,6 +1566,40 @@ bool CafeCompiler::CompileR600(CompileState &state, std::string &diagnostics)
       return false;
    }
    return true;
+}
+
+GX2ShaderMode CafeCompiler::CompileComputeShader(const char *source, GLSLComputeShader *&shader_output,
+                                                std::string &diagnostics, GLSL_COMPILER_FLAG flags)
+{
+   CompileState state;
+   if (!CompileFrontend(source, GL_COMPUTE_SHADER, state, diagnostics))
+      return GLSL_SHADER_MODE_ERROR;
+   state.mode = GX2_SHADER_MODE_UNIFORM_BLOCK;
+   if (!PrepareNir(state, diagnostics) || !CompileR600(state, diagnostics))
+      return GLSL_SHADER_MODE_ERROR;
+   std::unique_ptr<GLSLComputeShader, decltype(&FreeComputeShader)> output(
+      static_cast<GLSLComputeShader *>(calloc(1, sizeof(GLSLComputeShader))), FreeComputeShader);
+   if (!output) { diagnostics = "Out of memory allocating compute shader"; return GLSL_SHADER_MODE_ERROR; }
+   *output = state.compute;
+   GX2ComputeShader &shader = output->shader;
+   if (!CopyProgram(state.pipe_shader.shader, shader.program, shader.size) ||
+       !CopyReflection(state.reflection, &shader)) {
+      diagnostics = "Out of memory copying compute shader";
+      return GLSL_SHADER_MODE_ERROR;
+   }
+   // Native GX2SetComputeShader consumes words 0, 4, 5. The other words are
+   // retained compiler ABI fields, matching the native no-LDS descriptor.
+   shader.regs[0] = S_028868_NUM_GPRS(state.pipe_shader.shader.bc.ngpr) |
+                    S_028868_STACK_SIZE(state.pipe_shader.shader.bc.nstack);
+   shader.regs[3] = 0x2c003;
+   shader.regs[5] = 0x4000; // SQ_DYN_GPR_CNTL_PS_FLUSH_REQ
+   shader.workGroupSizeX = state.nir->info.workgroup_size[0];
+   shader.workGroupSizeY = state.nir->info.workgroup_size[1];
+   shader.workGroupSizeZ = state.nir->info.workgroup_size[2];
+   if (flags & GLSL_COMPILER_FLAG_GENERATE_DISASSEMBLY)
+      r600_bytecode_disasm(&state.pipe_shader.shader.bc);
+   shader_output = output.release();
+   return GX2_SHADER_MODE_COMPUTE_SHADER;
 }
 
 GX2ShaderMode CafeCompiler::CompileVertexShader(const char *source, GLSLCompileMode requested_mode,

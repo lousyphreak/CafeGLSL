@@ -1,6 +1,7 @@
 cafecompiler_sources = files(
   'api.cpp',
   'cafe_compiler.cpp',
+  'native_compute.cpp',
   'gfd_write.cpp',
 )
 

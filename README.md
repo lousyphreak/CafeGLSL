@@ -8,9 +8,76 @@ By default, Wii U offers no way to compile shaders dynamically during runtime, y
 
 ## Current limitations
 
-- No support for geometry, compute or tessellation shaders.
-- Read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
+- No support for geometry or tessellation shaders.
+- Native compute supports independent 64-lane groups, plus lane-zero execution of independent 1x1x1 groups. Shared LDS lowering, global atomics and in-dispatch export reads are unsupported.
+- Graphics read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
 - Wii U limitation: GX2 uses one uniform mode for both the vertex and pixel shader in each draw. You must select that mode before drawing. See [Important: choose loose uniforms or uniform blocks](#important-choose-loose-uniforms-or-uniform-blocks) below.
+
+## Native compute library API
+
+`CompileComputeShader(source, &result, log, sizeof(log), flags)` returns
+`GX2_SHADER_MODE_COMPUTE_SHADER`, or `GLSL_SHADER_MODE_ERROR` with diagnostics.
+The result is a `GLSLComputeShader`; bind its `shader` member with
+`GX2SetComputeShader`. Release it with `FreeComputeShader` after GPU use ends.
+The static API is available on host and Wii U. The standalone CLI accepts
+vertex/pixel stages.
+
+Compute always uses uniform blocks. Loose uniforms retain the existing block-zero
+reflection and initial-value ABI. Block 15 is reserved for a 512-byte resource
+layout table. For each binding 0..15, upload two little-endian `uvec4` values:
+
+```
+{ exportBaseDword, sizeDwords, rowPitchDwords, layerPitchDwords }
+{ width, height, layers, 0 }
+```
+
+All writable resources use disjoint ranges of one native global export
+allocation. Bind it with `GX2SetShaderExportBuffer`; repeated setter calls cannot
+bind independent allocations simultaneously. Readonly SSBOs use the existing
+DWORD VFETCH descriptors in the vertex texture bank. Compute vector buffer loads
+are split into scalar fetches. `imageLoad` uses a readonly sampled texture alias
+at the declared image binding. Publish a prior export and materialize its image
+before binding that alias. Arbitrary read/write sharing within a kernel needs
+uncached `READ_MEM` lowering and is rejected.
+
+`result->resources` reflects each active buffer/image's binding, kind, format,
+export element byte size and read/write use. Ordinary samplers remain in
+`shader.samplerVars`. The caller owns layout dimensions, pitches, export ranges,
+resource publication, and lifetime through normal GPU retirement.
+
+RGBA32F/UI and R32F/UI export their native DWORDs. RGBA16F exports two packed
+DWORDs per texel; half conversion is GPU integer code with round-to-nearest-even,
+subnormal and infinity/NaN handling. RGBA8 exports one packed DWORD. R16F, R8 and
+RG8 export a quantized float4 (16 bytes per texel) to avoid adjacent lanes racing
+over sub-DWORD writes. These widened images require GPU format conversion at
+each imageStore boundary. Packed images need a matching linear surface layout
+before copying or sampling; tiled textures cannot alias arbitrary export bytes.
+Image stores outside their declared dimensions are ignored.
+
+The native invocation input is the flat dispatch work-item index in `R0.x`.
+Local index is its low six bits. The remaining bits are a linear work-group
+index, expanded using the native dispatch dimension descriptor at vertex resource
+147 (SET_RESOURCE offset 0x865). Local XYZ follows the declared work-group layout,
+including FSR's 64x1x1 and the atmospheric LUTs' 8x8x1. The compiler emits real
+R700 MEM_EXPORT writes with DWORD indices in the index register's X channel and
+valid-pixel predication. It does not emit Evergreen RAT/GDS instructions.
+
+Ordinary 2D/array gathers, including a single gather offset, lower to four
+base-LOD texel-center samples in GLSL gather component order. Retain base-LOD
+sampler limits for these gathers. Shadow, dynamic sampler-array selection,
+explicit-LOD and four-offset gathers are diagnosed as unsupported.
+
+`SerializeGFD` accepts `GFDFile::computeShaders` and writes native GFD 7.1 blocks
+14/15 with the 0x84-byte target descriptor and the existing relocation format.
+WUT's graphics GFD loader does not load these blocks; consumers must implement a
+compute loader. Preserve the complete register image stored in the descriptor.
+`over64Mode` and `wavesPerSimd` remain zero.
+
+Compilation does not publish GPU caches. On Wii U, publish code with CPU_SHADER,
+uniform/layout data with CPU|UNIFORM_BLOCK, and dispatch parameters with CPU
+invalidation. Mode entry/exit, export publication and conversion, and graphics
+state restoration belong to the renderer. Successful offline compilation is not
+hardware execution validation.
 
 ## How to use
 

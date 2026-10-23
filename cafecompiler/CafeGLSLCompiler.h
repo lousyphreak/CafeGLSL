@@ -44,6 +44,43 @@ GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requestedM
 GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requestedMode,
                                        GX2PixelShader **shaderOut, char *infoLogOut,
                                        int infoLogMaxLength, GLSL_COMPILER_FLAG flags);
+/* Compute resource/layout ABI version 1. Block 15 is reserved for 16 entries,
+ * each two little-endian uvec4s: {baseDword, sizeDwords, rowPitchDwords,
+ * layerPitchDwords}, {width, height, layers, 0}. All writable slots address the
+ * one GX2 shader export allocation. Sampled inputs retain their native slots.
+ * Images smaller than a DWORD use a widened, quantized float4 intermediate;
+ * the renderer must convert it at the imageStore boundary before sampling.
+ */
+typedef enum GLSLComputeResourceKind {
+   GLSL_COMPUTE_BUFFER = 0,
+   GLSL_COMPUTE_IMAGE = 1,
+} GLSLComputeResourceKind;
+typedef enum GLSLComputeFormat {
+   GLSL_COMPUTE_FORMAT_BUFFER = 0,
+   GLSL_COMPUTE_FORMAT_RGBA32F = 1,
+   GLSL_COMPUTE_FORMAT_RGBA16F = 2,
+   GLSL_COMPUTE_FORMAT_R32F = 3,
+   GLSL_COMPUTE_FORMAT_R16F = 4,
+   GLSL_COMPUTE_FORMAT_RGBA8 = 5,
+   GLSL_COMPUTE_FORMAT_RG8 = 6,
+   GLSL_COMPUTE_FORMAT_R8 = 7,
+   GLSL_COMPUTE_FORMAT_RGBA32UI = 8,
+   GLSL_COMPUTE_FORMAT_R32UI = 9,
+} GLSLComputeFormat;
+typedef struct GLSLComputeResource {
+   uint32_t binding, kind, format, elementBytes;
+   uint32_t read, write;
+} GLSLComputeResource;
+typedef struct GLSLComputeShader {
+   GX2ComputeShader shader;
+   uint32_t resourceCount;
+   GLSLComputeResource resources[16];
+} GLSLComputeShader;
+GX2ShaderMode CompileComputeShader(const char *source, GLSLComputeShader **shaderOut,
+                                  char *infoLogOut, int infoLogMaxLength,
+                                  GLSL_COMPILER_FLAG flags);
+void FreeComputeShader(GLSLComputeShader *shader);
+
 /* Compile a pair with a shared uniform mode. Both sources are required.
  * Matching vertex outputs to pixel inputs is not checked. */
 GX2ShaderMode CompileShaderPair(const char *vertexSource, const char *pixelSource,

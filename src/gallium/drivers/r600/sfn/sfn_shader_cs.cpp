@@ -7,6 +7,7 @@
 #include "sfn_shader_cs.h"
 
 #include "sfn_instr_fetch.h"
+#include "sfn_instr_export.h"
 
 namespace r600 {
 
@@ -27,6 +28,11 @@ ComputeShader::do_allocate_reserved_registers()
 {
    auto& vf = value_factory();
 
+   if (chip_class() == ISA_CC_R700) {
+      m_local_invocation_id[0] = vf.allocate_pinned_register(0, 0);
+      m_local_invocation_id[0]->set_flag(Register::pin_end);
+      return 1;
+   }
    const int thread_id_sel = 0;
    const int wg_id_sel = 1;
 
@@ -42,6 +48,31 @@ ComputeShader::do_allocate_reserved_registers()
 bool
 ComputeShader::process_stage_intrinsic(nir_intrinsic_instr *instr)
 {
+   if (chip_class() == ISA_CC_R700) {
+      auto &vf = value_factory();
+      if (instr->intrinsic == nir_intrinsic_load_num_workgroups)
+         return emit_load_from_info_buffer(instr, 0);
+      if (instr->intrinsic == nir_intrinsic_load_vertex_id) {
+         emit_instruction(new AluInstr(op1_mov, vf.dest(instr->def, 0, pin_none),
+                                      m_local_invocation_id[0], AluInstr::write));
+         return true;
+      }
+      if (instr->intrinsic == nir_intrinsic_store_global) {
+         auto addr = vf.temp_register(0);
+         // R700 export indices are DWORD offsets in the global export region.
+         emit_instruction(new AluInstr(op2_lshr_int, addr, vf.src(instr->src[1], 0),
+                                       vf.literal(2), AluInstr::write));
+         unsigned n = nir_src_num_components(instr->src[0]);
+         RegisterVec4::Swizzle swz = {7, 7, 7, 7};
+         for (unsigned i = 0; i < n; ++i) swz[i] = i;
+         auto value = vf.temp_vec4(pin_group, swz);
+         for (unsigned i = 0; i < n; ++i)
+            emit_instruction(new AluInstr(op1_mov, value[i], vf.src(instr->src[0], i), AluInstr::write));
+         emit_instruction(new MemRingOutInstr(cf_mem_export, MemRingOutInstr::mem_write_ind,
+                                             value, 0, n, addr));
+         return true;
+      }
+   }
    switch (instr->intrinsic) {
    case nir_intrinsic_load_local_invocation_id:
       return emit_load_3vec(instr, m_local_invocation_id);
@@ -90,11 +121,16 @@ ComputeShader::emit_load_from_info_buffer(nir_intrinsic_instr *instr, int offset
                                 {0, 1, 2, 7},
                                 m_zero_register,
                                 offset,
-                                R600_BUFFER_INFO_CONST_BUFFER,
+                                chip_class() == ISA_CC_R700 ? 147 : R600_BUFFER_INFO_CONST_BUFFER,
                                 nullptr,
                                 fmt_32_32_32_32);
 
    ir->set_fetch_flag(LoadFromBuffer::srf_mode);
+   if (chip_class() == ISA_CC_R700) {
+      ir->set_fetch_flag(LoadFromBuffer::use_const_field);
+      ir->set_fetch_flag(LoadFromBuffer::use_tc);
+      ir->set_mfc(11);
+   }
    ir->reset_fetch_flag(LoadFromBuffer::format_comp_signed);
    ir->set_num_format(vtx_nf_int);
    emit_instruction(ir);

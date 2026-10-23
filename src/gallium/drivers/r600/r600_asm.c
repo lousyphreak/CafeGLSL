@@ -192,7 +192,7 @@ int r600_bytecode_add_output(struct r600_bytecode *bc,
 	if (output->gpr >= bc->ngpr)
 		bc->ngpr = output->gpr + 1;
 
-	if (bc->cf_last && (bc->cf_last->op == output->op ||
+	if (output->op != CF_OP_MEM_EXPORT && bc->cf_last && (bc->cf_last->op == output->op ||
 		(bc->cf_last->op == CF_OP_EXPORT &&
 		output->op == CF_OP_EXPORT_DONE)) &&
 		output->type == bc->cf_last->output.type &&
@@ -1824,7 +1824,8 @@ static int r600_bytecode_cf_build(struct r600_bytecode *bc, struct r600_bytecode
 			S_SQ_CF_ALLOC_EXPORT_WORD1_CF_INST(opcode) |
 			S_SQ_CF_ALLOC_EXPORT_WORD1_END_OF_PROGRAM(cf->end_of_program) |
 			S_SQ_CF_ALLOC_EXPORT_WORD1_BUF_ARRAY_SIZE(cf->output.array_size) |
-			S_SQ_CF_ALLOC_EXPORT_WORD1_BUF_COMP_MASK(cf->output.comp_mask);
+			S_SQ_CF_ALLOC_EXPORT_WORD1_BUF_COMP_MASK(cf->output.comp_mask) |
+			S_SQ_CF_ALLOC_EXPORT_WORD1_VALID_PIXEL_MODE(cf->vpm);
 	} else {
 		bc->bytecode[id++] = S_SQ_CF_WORD0_ADDR(cf->cf_addr >> 1);
 		bc->bytecode[id++] = S_SQ_CF_WORD1_CF_INST(opcode) |

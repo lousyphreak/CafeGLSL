@@ -176,3 +176,23 @@ typedef struct GX2PixelShader {
 #ifdef __cplusplus
 }
 #endif
+
+/* Native compute descriptor; pointer fields have host size off target. */
+typedef struct GX2ComputeShader {
+   uint32_t regs[12];
+   uint32_t size;
+   void *program;
+   uint32_t uniformBlockCount;
+   GX2UniformBlock *uniformBlocks;
+   uint32_t uniformVarCount;
+   GX2UniformVar *uniformVars;
+   uint32_t initialValueCount;
+   GX2UniformInitialValue *initialValues;
+   uint32_t loopVarCount;
+   GX2LoopVar *loopVars;
+   uint32_t samplerVarCount;
+   GX2SamplerVar *samplerVars;
+   uint32_t workGroupSizeX, workGroupSizeY, workGroupSizeZ;
+   uint32_t over64Mode, wavesPerSimd;
+   GX2RBuffer gx2rBuffer;
+} GX2ComputeShader;

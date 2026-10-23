@@ -223,12 +223,16 @@ fill_bytecode_mem_ring(const MemRingOutInstr& instr)
    output.type = instr.type();
    output.elem_size = 3;
    output.comp_mask = 0xf;
+   if (instr.op() == CF_OP_MEM_EXPORT) {
+      output.elem_size = instr.ncomp();
+      output.comp_mask = (1u << (instr.ncomp() + 1)) - 1;
+   }
    output.burst_count = 1;
    output.op = instr.op();
    if (instr.type() == MemRingOutInstr::mem_write_ind ||
        instr.type() == MemRingOutInstr::mem_write_ind_ack) {
       output.index_gpr = instr.index_reg();
-      output.array_size = 0xfff;
+      output.array_size = instr.op() == CF_OP_MEM_EXPORT ? 0 : 0xfff;
    }
    output.array_base = instr.array_base();
 
@@ -461,6 +465,8 @@ emit_bytecode_mem_ring(r600_bytecode& bc, const MemRingOutInstr& instr)
       return false;
    }
 
+   if (instr.op() == CF_OP_MEM_EXPORT)
+      bc.cf_last->vpm = 1;
    return true;
 }
 

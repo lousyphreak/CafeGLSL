@@ -25,6 +25,8 @@ public:
    bool valid() const { return m_valid; }
    const std::string &initialization_error() const { return m_initialization_error; }
 
+   GX2ShaderMode CompileComputeShader(const char *source, GLSLComputeShader *&shader_output,
+                                     std::string &diagnostics, GLSL_COMPILER_FLAG flags);
    GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requested_mode,
                                            GX2VertexShader *&shader_output, std::string &diagnostics,
                                            GLSL_COMPILER_FLAG flags);

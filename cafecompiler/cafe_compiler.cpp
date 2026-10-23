@@ -1194,6 +1194,8 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Extensions.ARB_ES3_2_compatibility = true;
    m_ctx->Extensions.ARB_explicit_uniform_location = true;
    m_ctx->Extensions.ARB_shading_language_packing = true;
+   /* Latte exports the render-target layer and viewport index in POS1.zw. */
+   m_ctx->Extensions.ARB_shader_viewport_layer_array = true;
 
    _mesa_glsl_builtin_functions_init_or_ref();
    m_builtins_initialized = true;

@@ -47,6 +47,7 @@ files_r600 = files(
   'r600_gpu_load.c',
   'r600_perfcounter.c',
   'r600_pipe_common.c',
+  'r600_nir_options.c',
   'r600_pipe_common.h',
   'r600_query.c',
   'r600_query.h',
@@ -60,6 +61,9 @@ files_r600 = files(
   'radeon_vce.h',
   'radeon_video.c',
   'radeon_video.h',
+  )
+
+files_r600_sfn = files(
   'sfn/sfn_alu_defines.cpp',
   'sfn/sfn_alu_defines.h',
   'sfn/sfn_alu_readport_validation.cpp',
@@ -138,14 +142,34 @@ files_r600 = files(
   'sfn/sfn_virtualvalues.cpp',
   'sfn/sfn_virtualvalues.h',
   )
+files_r600 += files_r600_sfn
 
-egd_tables_h = custom_target(
-  'egd_tables.h',
-  input : ['egd_tables.py', 'evergreend.h'],
-  output : 'egd_tables.h',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
-)
+
+# The standalone compiler uses the assembler and SFN, without a Gallium device.
+# Keep the shared shader translation unit until its compiler helpers are split.
+if mode_cafecompiler
+  files_r600 = files(
+    'eg_asm.c',
+    'r600_asm.c',
+    'r600_dump.c',
+    'r600_isa.c',
+    'r600_nir_options.c',
+    'r600_sfn.cpp',
+    'r600_shader.c',
+    'r700_asm.c',
+  ) + files_r600_sfn
+endif
+
+if not mode_cafecompiler
+  egd_tables_h = custom_target(
+    'egd_tables.h',
+    input : ['egd_tables.py', 'evergreend.h'],
+    output : 'egd_tables.h',
+    command : [prog_python, '@INPUT@'],
+    capture : true,
+  )
+  files_r600 += egd_tables_h
+endif
 
 sfn_nir_algebraic_c = custom_target(
   'sfn_nir_algebraic_c',
@@ -172,7 +196,7 @@ endif
 
 libr600 = static_library(
   'r600',
-  [files_r600, egd_tables_h, sfn_nir_algebraic_c, sha1_h],
+  [files_r600, sfn_nir_algebraic_c, sha1_h],
   c_args : [r600_c_args, '-Wstrict-overflow=0'],
   cpp_args: r600_cpp_args,
   gnu_symbol_visibility : 'hidden',

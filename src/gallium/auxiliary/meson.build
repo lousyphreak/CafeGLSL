@@ -506,20 +506,40 @@ u_unfilled_gen_c = custom_target(
   command : [prog_python, '@INPUT@', '@OUTPUT@'],
 )
 
+# The standalone R600 compiler retains TGSI semantic/scan helpers and the
+# translation helper referenced by the shared shader code, without draw/device code.
+if mode_cafecompiler
+  files_libgallium = files(
+    'nir/tgsi_to_nir.c',
+    'tgsi/tgsi_dump.c',
+    'tgsi/tgsi_from_mesa.c',
+    'tgsi/tgsi_info.c',
+    'tgsi/tgsi_iterate.c',
+    'tgsi/tgsi_parse.c',
+    'tgsi/tgsi_scan.c',
+    'tgsi/tgsi_strings.c',
+    'tgsi/tgsi_util.c',
+  )
+  libgallium_deps = [idep_nir, idep_nir_headers, idep_mesautil]
+else
+  files_libgallium += [u_indices_gen_c, u_unfilled_gen_c]
+  libgallium_deps = [
+    dep_libdrm, dep_llvm, dep_dl, dep_m, dep_thread, dep_lmsensors, dep_ws2_32,
+    idep_nir, idep_nir_headers, idep_mesautil,
+  ]
+endif
+
 libgallium_extra_c_args = []
 libgallium = static_library(
   'gallium',
-  [files_libgallium, u_indices_gen_c, u_unfilled_gen_c],
+  files_libgallium,
   include_directories : [
     inc_loader, inc_gallium, inc_src, inc_include, include_directories('util')
   ],
   c_args : [c_msvc_compat_args, libgallium_extra_c_args],
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
-  dependencies : [
-    dep_libdrm, dep_llvm, dep_dl, dep_m, dep_thread, dep_lmsensors, dep_ws2_32,
-    idep_nir, idep_nir_headers, idep_mesautil,
-  ],
+  dependencies : libgallium_deps,
   build_by_default : false
 )
 

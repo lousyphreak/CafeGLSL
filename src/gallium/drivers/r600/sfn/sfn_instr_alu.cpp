@@ -1758,7 +1758,13 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       case nir_op_frcp:
          return emit_alu_trans_op1_eg(*alu, op1_recip_ieee, shader);
       case nir_op_frsq:
+#ifdef CAFE_COMPILER
+         // GLSL leaves inversesqrt(x <= 0) undefined. Keep zero finite so
+         // degenerate normalization does not introduce 0 * infinity NaNs.
+         return emit_alu_trans_op1_eg(*alu, op1_recipsqrt_clamped, shader);
+#else
          return emit_alu_trans_op1_eg(*alu, op1_recipsqrt_ieee1, shader);
+#endif
       case nir_op_fsin_normalized_2_pi:
          return emit_alu_trans_op1_eg(*alu, op1_sin, shader);
       case nir_op_fsqrt:

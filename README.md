@@ -9,7 +9,7 @@ By default, Wii U offers no way to compile shaders dynamically during runtime, y
 ## Current limitations
 
 - No support for geometry or tessellation shaders.
-- Native compute supports independent 64-lane groups, plus lane-zero execution of independent 1x1x1 groups. Shared LDS lowering, global atomics and in-dispatch export reads are unsupported.
+- Native compute maps independent logical workgroups onto 64-lane hardware waves. Shared LDS lowering, global atomics and in-dispatch export reads are unsupported; oversized groups containing barriers or subgroup communication cannot be split.
 - Graphics read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
 - Wii U limitation: GX2 uses one uniform mode for both the vertex and pixel shader in each draw. You must select that mode before drawing. See [Important: choose loose uniforms or uniform blocks](#important-choose-loose-uniforms-or-uniform-blocks) below.
 
@@ -55,12 +55,28 @@ before copying or sampling; tiled textures cannot alias arbitrary export bytes.
 Image stores outside their declared dimensions are ignored.
 
 The native invocation input is the flat dispatch work-item index in `R0.x`.
-Local index is its low six bits. The remaining bits are a linear work-group
-index, expanded using the native dispatch dimension descriptor at vertex resource
-147 (SET_RESOURCE offset 0x865). Local XYZ follows the declared work-group layout,
-including FSR's 64x1x1 and the atmospheric LUTs' 8x8x1. The compiler emits real
-R700 MEM_EXPORT writes with DWORD indices in the index register's X channel and
-valid-pixel predication. It does not emit Evergreen RAT/GDS instructions.
+The descriptor retains the shader's logical `workGroupSizeX/Y/Z`. Compute
+`F = ceil(workGroupSizeX * workGroupSizeY * workGroupSizeZ / 64)` and pass native
+`GX2DispatchParams` counts `{logicalGroupCountX * F, logicalGroupCountY,
+logicalGroupCountZ}`. Counts are still native big-endian. No extra metadata or
+uniform supplies the logical dispatch dimensions: the shader fetches the native
+dispatch descriptor at vertex resource 147 (SET_RESOURCE offset 0x865), divides
+its X count by compile-time F, and retains its Y/Z counts.
+
+The logical local index is `R0.x % (64 * F)` and the logical linear group index
+is `R0.x / (64 * F)`. The shader expands local XYZ with its original declared
+layout, expands group XYZ with the recovered logical dispatch dimensions, and
+computes global IDs from those two values. Padding lanes with local index at
+least the logical group size execute no shader work. This includes partial
+waves and 1x1x1 groups. Groups of 64 retain the original mapping. Logical
+16x16x1 groups use F=4; 64x1x1 and 8x8x1 groups use F=1.
+Shared memory, barriers, subgroup communication and global
+atomics are not made usable across physical waves by this mapping.
+
+The native dispatch counts launch `X * Y * Z * 64` work-items.
+`workGroupSizeX/Y/Z` and `over64Mode` do not change that launch size.
+Compute stores use R700 MEM_EXPORT with DWORD indices and valid-pixel
+predication.
 
 Ordinary 2D/array gathers, including a single gather offset, lower to four
 base-LOD texel-center samples in GLSL gather component order. Retain base-LOD
@@ -72,6 +88,10 @@ explicit-LOD and four-offset gathers are diagnosed as unsupported.
 WUT's graphics GFD loader does not load these blocks; consumers must implement a
 compute loader. Preserve the complete register image stored in the descriptor.
 `over64Mode` and `wavesPerSimd` remain zero.
+`GX2SetComputeShader` also installs each reflected loop constant in the shared
+vertex/compute loop bank. CafeGLSL supplies `{offset=0, value=0x01000fff}`; preserve
+that reflection when loading GFD. No duplicate raw loop programming is needed;
+the native setter does not invent this default for a shader with no loop entries.
 
 Compilation does not publish GPU caches. On Wii U, publish code with CPU_SHADER,
 uniform/layout data with CPU|UNIFORM_BLOCK, and dispatch parameters with CPU

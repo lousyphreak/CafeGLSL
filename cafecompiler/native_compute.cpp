@@ -92,7 +92,19 @@ bool Resource(Lowering &s, unsigned slot, unsigned kind, unsigned format,
    return true;
 }
 
-nir_def *LocalIndex(nir_builder *b) { return nir_iand_imm(b, nir_load_vertex_id(b), 63); }
+unsigned GroupSize(const nir_shader *shader)
+{
+   return shader->info.workgroup_size[0] * shader->info.workgroup_size[1] *
+          shader->info.workgroup_size[2];
+}
+unsigned NativeGroupSpan(const nir_shader *shader)
+{
+   return ((GroupSize(shader) + 63) / 64) * 64;
+}
+nir_def *LocalIndex(nir_builder *b)
+{
+   return nir_umod_imm(b, nir_load_vertex_id(b), NativeGroupSpan(b->shader));
+}
 nir_def *LocalId(nir_builder *b)
 {
    auto idx = LocalIndex(b);
@@ -103,11 +115,15 @@ nir_def *LocalId(nir_builder *b)
 }
 nir_def *GroupCount(nir_builder *b)
 {
-   return nir_load_num_workgroups(b);
+   // The backend intrinsic fetches native dispatch counts from RID147.
+   auto physical = nir_load_num_workgroups(b);
+   unsigned waves = NativeGroupSpan(b->shader) / 64;
+   return nir_vec3(b, nir_udiv_imm(b, nir_channel(b, physical, 0), waves),
+                  nir_channel(b, physical, 1), nir_channel(b, physical, 2));
 }
 nir_def *GroupId(nir_builder *b)
 {
-   auto idx = nir_ushr_imm(b, nir_load_vertex_id(b), 6);
+   auto idx = nir_udiv_imm(b, nir_load_vertex_id(b), NativeGroupSpan(b->shader));
    auto dims = GroupCount(b);
    auto x = nir_channel(b, dims, 0), y = nir_channel(b, dims, 1);
    return nir_vec3(b, nir_umod(b, idx, x),
@@ -117,21 +133,29 @@ nir_def *GroupId(nir_builder *b)
 bool Lower(nir_builder *b, nir_instr *instr, void *data)
 {
    auto &s = *static_cast<Lowering *>(data);
+   if (!s.error->empty()) return false;
    if (instr->type != nir_instr_type_intrinsic) return false;
    auto intr = nir_instr_as_intrinsic(instr);
    b->cursor = nir_before_instr(instr);
    nir_def *value = nullptr;
+   if (GroupSize(b->shader) > 64 &&
+       (intr->intrinsic == nir_intrinsic_barrier ||
+        (nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_SUBGROUP))) {
+      *s.error = "Native GPU7 cannot split logical workgroups containing barriers or subgroup communication across 64-lane waves";
+      return false;
+   }
    switch (intr->intrinsic) {
    case nir_intrinsic_load_local_invocation_index:
-      value = b->shader->info.workgroup_size[0] == 1 &&
-              b->shader->info.workgroup_size[1] == 1 &&
-              b->shader->info.workgroup_size[2] == 1 ? nir_imm_int(b, 0) : LocalIndex(b);
+      value = LocalIndex(b);
       break;
    case nir_intrinsic_load_base_workgroup_id:
    case nir_intrinsic_load_base_global_invocation_id: value = nir_imm_zero(b, 3, intr->def.bit_size); break;
    case nir_intrinsic_load_local_invocation_id: value = LocalId(b); break;
    case nir_intrinsic_load_workgroup_id: value = GroupId(b); break;
-   case nir_intrinsic_load_num_workgroups: return false;
+   case nir_intrinsic_load_num_workgroups:
+      if (NativeGroupSpan(b->shader) == 64) return false;
+      value = GroupCount(b);
+      break;
    case nir_intrinsic_load_global_invocation_id:
       value = nir_iadd(b, nir_imul(b, GroupId(b), nir_imm_ivec3(b,
          b->shader->info.workgroup_size[0], b->shader->info.workgroup_size[1],
@@ -148,10 +172,6 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
    case nir_intrinsic_image_deref_atomic:
    case nir_intrinsic_image_deref_atomic_swap:
       *s.error = "Native R700 has no global atomic RMW instruction (MEM_REDUCT is wave-local)";
-      return false;
-   case nir_intrinsic_load_shared:
-   case nir_intrinsic_store_shared:
-      *s.error = "Native GPU7 shared memory requires owner-write vec4 LDS lowering; this kernel is unsupported";
       return false;
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_store_ssbo: {
@@ -295,13 +315,12 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
 
 bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader &output, std::string &error)
 {
-   unsigned count = nir->info.workgroup_size[0] * nir->info.workgroup_size[1] * nir->info.workgroup_size[2];
-   if (count != 64 && count != 1) {
-      error = "Native GPU7 requires 64 work-items per group (or an independent lane-zero 1x1x1 kernel); declared " + std::to_string(count);
-      return false;
-   }
-   nir_foreach_variable_with_modes(var, nir, nir_var_mem_shared) {
-      error = "Native GPU7 shared memory requires owner-write vec4 LDS lowering; this kernel is unsupported";
+   unsigned count = GroupSize(nir);
+   // The GLSL linker has already lowered shared variables to explicit IO.
+   if (nir->info.shared_size) {
+      error = count > 64 ?
+         "Native GPU7 cannot split logical workgroups using shared LDS across 64-lane waves" :
+         "Native GPU7 shared memory requires owner-write vec4 LDS lowering; this kernel is unsupported";
       return false;
    }
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
@@ -310,12 +329,12 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
    Lowering state{program, &output, &error};
    nir_shader_instructions_pass(nir, Lower, nir_metadata_none, &state);
    if (!error.empty()) return false;
-   if (count == 1) {
-      // All logical IDs stay zero; only lane zero in each native wave executes.
+   if (count % 64 != 0) {
+      // Dispatch is rounded up to whole waves; padding lanes execute no shader work.
       auto impl = nir_shader_get_entrypoint(nir);
       nir_builder b = nir_builder_create(impl);
       b.cursor = nir_before_impl(impl);
-      nir_push_if(&b, nir_ine_imm(&b, LocalIndex(&b), 0));
+      nir_push_if(&b, nir_uge_imm(&b, LocalIndex(&b), count));
       nir_jump(&b, nir_jump_return);
       nir_pop_if(&b, nullptr);
       nir_metadata_invalidate(nir);

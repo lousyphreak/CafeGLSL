@@ -50,6 +50,12 @@ GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requestedMo
  * one GX2 shader export allocation. Sampled inputs retain their native slots.
  * Images smaller than a DWORD use a widened, quantized float4 intermediate;
  * the renderer must convert it at the imageStore boundary before sampling.
+ * shader.workGroupSizeX/Y/Z retain logical dimensions. With
+ * F = ceil(X*Y*Z / 64), dispatch native {logicalGroupCountX*F, Ycount, Zcount}.
+ * The compiled shader recovers logical counts/IDs and masks padding lanes.
+ * Only independent logical groups may span multiple native waves; shared LDS,
+ * barriers, subgroup communication, atomics and export-memory sharing are not
+ * supplied by this mapping. over64Mode remains zero.
  */
 typedef enum GLSLComputeResourceKind {
    GLSL_COMPUTE_BUFFER = 0,

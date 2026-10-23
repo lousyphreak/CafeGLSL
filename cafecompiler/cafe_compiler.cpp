@@ -1388,6 +1388,19 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
 
 bool CafeCompiler::CompileR600(CompileState &state, std::string &diagnostics)
 {
+   /* SFN's GATHER4 selection has no R700 opcode. Reject active gathers rather
+    * than returning bytecode that cannot execute on Latte. */
+   nir_foreach_function_impl(impl, state.nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex &&
+                nir_instr_as_tex(instr)->op == nir_texop_tg4) {
+               diagnostics = "Texture gather is not supported by the Latte/R700 compiler";
+               return false;
+            }
+         }
+      }
+   }
    state.selector.nir = state.nir;
    state.selector.type = state.stage;
    state.selector.ir_type = PIPE_SHADER_IR_NIR;

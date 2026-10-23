@@ -103,7 +103,7 @@ target_link_libraries(myapp PRIVATE cafeglsl::cafeglsl)
 With pkg-config:
 
 ```bash
-powerpc-eabi-pkg-config --cflags --libs cafeglsl
+powerpc-eabi-pkg-config --static --cflags --libs cafeglsl
 ```
 
 The final link needs `-Wl,--gc-sections`. wut.specs already passes it, and the CMake package sets it as well.
@@ -145,6 +145,12 @@ Free shaders when you are done with `FreeShaders(vertex, pixel)`, or use `FreeVe
 
 The desktop release includes `lib/libcafeglsl.a` and headers in
 `include/cafeglsl/`. It uses the same compile functions as the Wii U library.
+Both host and Wii U releases include CMake and pkg-config metadata with their
+configured dependencies. Use `find_package(cafeglsl REQUIRED)` and link
+`cafeglsl::cafeglsl`, or use `pkg-config --static --cflags --libs cafeglsl` on
+the host. Add the installation prefix to `CMAKE_PREFIX_PATH` or its pkgconfig
+directory to `PKG_CONFIG_PATH` as needed. The Meson installation and release
+packager honor the configured library, header and binary directories.
 
 To save shaders to a .gsh file, include `<cafeglsl/gfd.h>`, fill in a `GFDFile` and call `WriteGFD()`.
 For in-memory output, call `SerializeGFD(file, align_blocks = false)` to receive

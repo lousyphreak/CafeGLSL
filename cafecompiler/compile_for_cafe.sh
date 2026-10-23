@@ -20,4 +20,4 @@ export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro}
 
 # Cafe consumers link the compiler archive directly. Host-only tools are built
 # by compile_for_host.sh instead.
-ninja -C "${ROOTDIR}/build-cafe" cafecompiler/libcafeglsl.a
+ninja -j24 -C "${ROOTDIR}/build-cafe" cafecompiler/libcafeglsl.a

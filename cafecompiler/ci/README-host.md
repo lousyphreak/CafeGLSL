@@ -52,7 +52,13 @@ below, especially if you compile the shaders separately.
 You can also embed the compiler into a desktop application, like a modding
 tool, and compile shaders without shelling out to the CLI.
 
-The library is `lib/libcafeglsl.a`, with its headers in `include/cafeglsl/`:
+The library is `lib/libcafeglsl.a`, with its headers in `include/cafeglsl/`.
+Use the included CMake package (`cafeglsl::cafeglsl`) or
+`pkg-config --static --cflags --libs cafeglsl` to include configured system
+libraries and section garbage collection. Point `CMAKE_PREFIX_PATH` at the
+release prefix or `PKG_CONFIG_PATH` at its `lib/pkgconfig` directory.
+
+Include the compiler header:
 
     #include <cafeglsl/CafeGLSLCompiler.h>
 
@@ -63,7 +69,9 @@ those to a .gsh file the way the CLI does, add:
     #include <cafeglsl/gfd.h>
 
 then fill in a `GFDFile` and call `WriteGFD()`. Both headers are served by the
-same library, so there is nothing extra to link.
+same library, so there is nothing extra to link. For in-memory GFD output,
+`SerializeGFD(file, align_blocks = false)` returns an owned `std::vector<uint8_t>`;
+its bytes remain valid after freeing the compiled shaders.
 
 Call `InitGLSLCompiler()` before compiling and `DestroyGLSLCompiler()` when you no longer need the compiler.
 

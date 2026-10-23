@@ -52,7 +52,10 @@ GX2ShaderMode CompileShaderPair(const char *vertexSource, const char *pixelSourc
                                       char *infoLogOut, int infoLogMaxLength,
                                       GLSL_COMPILER_FLAG flags);
 
-/* Free shaders when done. Null shaders are accepted. */
+/* Results remain owned by the caller after compiler destruction. Compilation
+ * writes CPU memory only; Wii U callers must establish shader-cache visibility
+ * before binding programs and keep results alive until GPU use has completed.
+ * Free shaders when done. Null shaders are accepted. */
 void FreeVertexShader(GX2VertexShader *shader);
 void FreePixelShader(GX2PixelShader *shader);
 void FreeShaders(GX2VertexShader *vertex, GX2PixelShader *pixel);

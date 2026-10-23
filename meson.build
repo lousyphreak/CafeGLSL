@@ -14,6 +14,7 @@ project(
     'cpp_std=c++17',
     'rust_std=2021',
     'build.rust_std=2021',
+    'pkgconfig.relocatable=true',
   ],
 )
 

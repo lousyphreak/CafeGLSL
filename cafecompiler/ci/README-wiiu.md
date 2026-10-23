@@ -21,7 +21,7 @@ target_link_libraries(myapp PRIVATE cafeglsl::cafeglsl)
 With pkg-config:
 
 ```bash
-powerpc-eabi-pkg-config --cflags --libs cafeglsl
+powerpc-eabi-pkg-config --static --cflags --libs cafeglsl
 ```
 
 The final link needs `-Wl,--gc-sections`. wut.specs already passes it, and the CMake package sets it as well.
@@ -33,6 +33,10 @@ The final link needs `-Wl,--gc-sections`. wut.specs already passes it, and the C
 Call `InitGLSLCompiler()` once, then `CompileShaderPair()` (or `CompileVertexShader()` and `CompilePixelShader()` separately) with the GLSL source.
 These give you the `GX2VertexShader` and `GX2PixelShader` structs GX2 expects when drawing.
 You can also save them to a .gsh file using `<cafeglsl/gfd.h>` and load them on later runs.
+
+Compilation writes CPU memory only. Establish shader-cache visibility before
+binding the returned programs, and retain the shaders until their GPU use has
+completed. Results remain valid after `DestroyGLSLCompiler()`.
 
 Call `DestroyGLSLCompiler()` when you no longer need the compiler.
 

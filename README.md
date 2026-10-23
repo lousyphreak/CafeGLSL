@@ -9,6 +9,7 @@ By default, Wii U offers no way to compile shaders dynamically during runtime, y
 ## Current limitations
 
 - No support for geometry, compute or tessellation shaders.
+- Read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
 - Wii U limitation: GX2 uses one uniform mode for both the vertex and pixel shader in each draw. You must select that mode before drawing. See [Important: choose loose uniforms or uniform blocks](#important-choose-loose-uniforms-or-uniform-blocks) below.
 
 ## How to use

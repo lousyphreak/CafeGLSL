@@ -49,6 +49,7 @@
 constexpr unsigned kMaxUniformBlocks = 16;
 constexpr unsigned kMaxAluConstComponents = 1024;
 constexpr unsigned kMaxSamplers = 18;
+constexpr unsigned kMaxReadonlyBuffers = 16;
 constexpr unsigned kLatteResourceBase = 0x80;
 constexpr const char *kDefaultUniformBlockName = "__cafe_loose_uniforms";
 constexpr unsigned kDefaultUniformBlockBinding = 0;
@@ -167,6 +168,14 @@ static bool AssignSamplerBindings(nir_shader *nir,
 {
    std::array<bool, kMaxSamplers> used{};
 
+   nir_foreach_variable_with_modes(variable, nir, nir_var_mem_ssbo) {
+      if (!(variable->data.access & ACCESS_NON_WRITEABLE)) {
+         diagnostics = "Latte buffer resources require readonly storage blocks";
+         return false;
+      }
+      used[variable->data.binding] = true;
+   }
+
    nir_foreach_variable_with_modes(variable, nir, nir_var_uniform) {
       const glsl_type *type = glsl_without_array(variable->type);
       if (glsl_contains_sampler(variable->type) && !glsl_type_is_sampler(type)) {
@@ -183,7 +192,7 @@ static bool AssignSamplerBindings(nir_shader *nir,
       }
       for (unsigned i = 0; i < count; ++i) {
          if (used[variable->data.binding + i]) {
-            diagnostics = "Overlapping explicit sampler bindings";
+            diagnostics = "Overlapping texture or read-only buffer bindings";
             return false;
          }
          used[variable->data.binding + i] = true;
@@ -362,6 +371,40 @@ static bool RemapUbos(nir_shader *nir,
    }
 
    return true;
+}
+
+struct ReadonlyBufferState {
+   gl_program *program;
+   std::string diagnostics;
+};
+
+static bool RemapReadonlyBuffer(nir_builder *builder, nir_instr *instruction, void *data)
+{
+   if (instruction->type != nir_instr_type_intrinsic)
+      return false;
+   auto *intrinsic = nir_instr_as_intrinsic(instruction);
+   auto &state = *static_cast<ReadonlyBufferState *>(data);
+   switch (intrinsic->intrinsic) {
+   case nir_intrinsic_load_ssbo:
+      if (!nir_src_is_const(intrinsic->src[0]) ||
+          intrinsic->def.bit_size != 32 || intrinsic->def.num_components != 1 ||
+          nir_intrinsic_align(intrinsic) < 4) {
+         state.diagnostics = "Latte read-only buffers require scalar, DWORD-aligned 32-bit reads and a static binding";
+         return false;
+      }
+      builder->cursor = nir_before_instr(instruction);
+      nir_src_rewrite(&intrinsic->src[0], nir_imm_int(builder,
+         state.program->sh.ShaderStorageBlocks[nir_src_as_uint(intrinsic->src[0])]->Binding));
+      return true;
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_get_ssbo_size:
+      state.diagnostics = "Latte buffer resources support read-only loads; writes, atomics and runtime length queries are unsupported";
+      return false;
+   default:
+      return false;
+   }
 }
 
 static GX2ShaderVarType ConvertType(const glsl_type *raw_type)
@@ -594,7 +637,7 @@ static bool BuildReflection(gl_shader_program *shader_program,
          continue;
       }
 
-      if (resource->Type != GL_UNIFORM && resource->Type != GL_BUFFER_VARIABLE)
+      if (resource->Type != GL_UNIFORM)
          continue;
 
       const gl_uniform_storage *uniform =
@@ -1087,6 +1130,14 @@ static void RemapLatteResources(r600_bytecode &bytecode)
             reinterpret_cast<char *>(vtx_node) - offsetof(r600_bytecode_vtx, list));
          if (vertex_fetch->buffer_id < kMaxUniformBlocks)
             vertex_fetch->buffer_id += kLatteResourceBase;
+         else if (vertex_fetch->buffer_id >= R600_IMAGE_REAL_RESOURCE_OFFSET &&
+                  vertex_fetch->buffer_id < R600_IMAGE_REAL_RESOURCE_OFFSET + kMaxReadonlyBuffers) {
+            // Read-only SSBOs use buffer descriptors in the texture resource bank.
+            // Their stride, format and byte order come from the bound resource.
+            vertex_fetch->buffer_id -= R600_IMAGE_REAL_RESOURCE_OFFSET;
+            vertex_fetch->use_const_fields = 1;
+            vertex_fetch->mega_fetch_count = 3;
+         }
       }
    }
 }
@@ -1209,6 +1260,10 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Const.MaxUniformBufferBindings = kMaxUniformBlocks;
    m_ctx->Const.MaxCombinedUniformBlocks = kMaxUniformBlocks * 2;
    m_ctx->Const.MaxUniformBlockSize = 64 * 1024;
+   m_ctx->Const.MaxShaderStorageBufferBindings = kMaxReadonlyBuffers;
+   m_ctx->Const.MaxCombinedShaderStorageBlocks = kMaxReadonlyBuffers * 2;
+   m_ctx->Const.MaxShaderStorageBlockSize = INT_MAX;
+   m_ctx->Const.ShaderStorageBufferOffsetAlignment = 4;
    m_ctx->Const.MaxVertexStreams = 4;
    m_ctx->Const.MaxTransformFeedbackBuffers = 4;
    m_ctx->Const.MaxVarying = 15;
@@ -1219,6 +1274,7 @@ bool CafeCompiler::InitializeContext()
    for (mesa_shader_stage stage : {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT}) {
       m_ctx->Const.Program[stage].MaxTextureImageUnits = kMaxSamplers;
       m_ctx->Const.Program[stage].MaxUniformBlocks = kMaxUniformBlocks;
+      m_ctx->Const.Program[stage].MaxShaderStorageBlocks = kMaxReadonlyBuffers;
       m_ctx->Const.Program[stage].MaxUniformComponents = 16 * 1024;
       m_ctx->Const.Program[stage].MaxCombinedUniformComponents =
          kMaxUniformBlocks * 16 * 1024;
@@ -1404,6 +1460,7 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
       return false;
 
    NIR_PASS(_, state.nir, gl_nir_lower_buffers, state.shader_program);
+   NIR_PASS(_, state.nir, nir_remove_dead_variables, nir_var_mem_ssbo, nullptr);
    NIR_PASS(_, state.nir, nir_lower_system_values);
 
    state.nir->num_uniforms = state.program->Parameters ?
@@ -1418,6 +1475,13 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
    }
    NIR_PASS(_, state.nir, nir_opt_copy_prop);
    NIR_PASS(_, state.nir, nir_opt_constant_folding);
+   ReadonlyBufferState readonly_buffers{state.program, {}};
+   nir_shader_instructions_pass(state.nir, RemapReadonlyBuffer,
+                                nir_metadata_control_flow, &readonly_buffers);
+   if (!readonly_buffers.diagnostics.empty()) {
+      diagnostics = std::move(readonly_buffers.diagnostics);
+      return false;
+   }
    if (!RemapUbos(state.nir, state.ubo_bindings, diagnostics))
       return false;
 

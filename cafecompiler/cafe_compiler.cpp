@@ -83,6 +83,7 @@ struct AttributeInfo {
 struct ReflectionInfo {
    std::vector<UniformBlockInfo> blocks;
    std::vector<UniformInfo> uniforms;
+   std::vector<GX2UniformInitialValue> initial_values;
    std::vector<SamplerInfo> samplers;
    std::vector<AttributeInfo> attributes;
 };
@@ -538,6 +539,33 @@ static bool BuildReflection(gl_shader_program *shader_program,
 
    const gl_uniform_storage *uniform_base = shader_program->data->UniformStorage;
 
+   /* The linker promotes read-only local arrays to hidden uniforms. They have
+    * no application-visible resource, but their data must accompany the code.
+    * Parameter rows are padded vec4s; Mesa's backing storage is tightly packed.
+    */
+   std::vector<unsigned> uniform_rows(shader_program->data->NumUniformStorage, 0);
+   for (unsigned i = 0; program->Parameters && i < program->Parameters->NumParameters; ++i) {
+      const gl_program_parameter &parameter = program->Parameters->Parameters[i];
+      if (parameter.Type != PROGRAM_UNIFORM)
+         continue;
+      const unsigned index = parameter.UniformStorageIndex;
+      const gl_uniform_storage &uniform = uniform_base[index];
+      if (!uniform.hidden)
+         continue;
+
+      const unsigned words = glsl_get_vector_elements(uniform.type) *
+                             (glsl_type_is_64bit(uniform.type) ? 2 : 1);
+      const unsigned rows = DIV_ROUND_UP(words, 4);
+      const unsigned row = uniform_rows[index]++;
+      const unsigned component = (row % rows) * 4;
+      const unsigned source = (row / rows) * words + component;
+      GX2UniformInitialValue value{};
+      value.offset = parameter.ValueOffset;
+      memcpy(value.value, uniform.storage + source,
+             MIN2(4u, words - component) * sizeof(uint32_t));
+      reflection.initial_values.push_back(value);
+   }
+
    for (unsigned i = 0; i < shader_program->data->NumProgramResourceList; ++i) {
       gl_program_resource *resource = &shader_program->data->ProgramResourceList[i];
       if (resource->Type == GL_PROGRAM_INPUT && stage == MESA_SHADER_VERTEX) {
@@ -671,12 +699,19 @@ static bool CopyReflection(const ReflectionInfo &reflection, Shader *shader)
       calloc(reflection.samplers.size(), sizeof(GX2SamplerVar)));
    shader->loopVarCount = 1;
    shader->loopVars = static_cast<GX2LoopVar *>(calloc(1, sizeof(GX2LoopVar)));
+   shader->initialValueCount = reflection.initial_values.size();
+   shader->initialValues = static_cast<GX2UniformInitialValue *>(
+      calloc(reflection.initial_values.size(), sizeof(GX2UniformInitialValue)));
 
    if ((!reflection.blocks.empty() && !shader->uniformBlocks) ||
        (!reflection.uniforms.empty() && !shader->uniformVars) ||
        (!reflection.samplers.empty() && !shader->samplerVars) ||
+       (!reflection.initial_values.empty() && !shader->initialValues) ||
        !shader->loopVars)
       return false;
+
+   for (unsigned i = 0; i < reflection.initial_values.size(); ++i)
+      shader->initialValues[i] = reflection.initial_values[i];
 
    for (unsigned i = 0; i < reflection.blocks.size(); ++i) {
       shader->uniformBlocks[i].name = DuplicateName(reflection.blocks[i].name);
@@ -1160,6 +1195,10 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Const.NativeIntegers = true;
    m_ctx->Const.UniformBooleanTrue = ~0u;
    m_ctx->Const.GenerateTemporaryNames = true;
+   /* Keep constant lookup tables in uniform storage instead of per-invocation
+    * scratch. Hidden uniform values are emitted in GX2's initialValues table.
+    */
+   m_ctx->Const.GLSLLowerConstArrays = true;
    m_ctx->Const.MaxClipPlanes = 8;
    m_ctx->Const.MaxDrawBuffers = 8;
    m_ctx->Const.MinProgramTexelOffset = -8;
@@ -1422,7 +1461,15 @@ bool CafeCompiler::CompileR600(CompileState &state, std::string &diagnostics)
    }
    if (shader.uses_images || shader.uses_atomics || shader.uses_tex_buffers ||
        shader.needs_scratch_space) {
-      diagnostics = "Shader uses a resource class not yet supported by CafeGLSL";
+      diagnostics = "Shader uses resources not yet supported by CafeGLSL:";
+      if (shader.uses_images)
+         diagnostics += " images";
+      if (shader.uses_atomics)
+         diagnostics += " atomics";
+      if (shader.uses_tex_buffers)
+         diagnostics += " texture buffers";
+      if (shader.needs_scratch_space)
+         diagnostics += " scratch space";
       return false;
    }
 

@@ -56,7 +56,7 @@ public:
 
    void I32(int32_t value) { U32(static_cast<uint32_t>(value)); }
 
-   void F32(float value)
+   void F32(const float &value)
    {
       uint32_t bits;
       memcpy(&bits, &value, sizeof(bits));
@@ -149,7 +149,8 @@ static void WriteInitialValues(Writer &writer,
    patch.target = writer.size();
    data_patches.push_back(patch);
    for (uint32_t i = 0; i < count; ++i) {
-      for (float value : values[i].value)
+      /* These fields also carry integer uniform bits, including NaN patterns. */
+      for (const float &value : values[i].value)
          writer.F32(value);
       writer.U32(values[i].offset);
    }

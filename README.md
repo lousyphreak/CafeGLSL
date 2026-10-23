@@ -200,6 +200,16 @@ Binding 0 must be free in any shader where loose uniforms need to be moved.
 Use the uniform offsets and block sizes recorded in the compiled shader to
 place the values in the buffer. This is definitely more of an advanced use-case.
 
+Read-only local constant arrays are lowered to hidden loose uniforms so lookup
+tables do not require per-invocation scratch memory. Their contents are stored in
+the shader's `initialValues` table, including in serialized GFD files. Each entry
+contains four raw 32-bit words at `offset` (in four-byte words). Preserve the bits
+when copying integer data, even though GX2 declares the value fields as floats.
+In block mode, initialize those rows in `__cafe_loose_uniforms` at binding 0 before
+uploading the buffer; in register mode, upload them with `GX2Set*UniformReg`.
+Reapply them whenever that storage is replaced or overwritten. Hidden constants
+do not appear in `uniformVars` and need no application uniform handles.
+
 Loose uniforms in register mode can contain at most 1024 scalar components.
 For example, this allows 1024 `int` values or 256 `vec4` values. Automatic mode
 selection also moves loose uniforms into a block when they exceed this limit.

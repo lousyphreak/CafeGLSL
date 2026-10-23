@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 constexpr uint32_t kFileMagic = 0x47667832;
@@ -40,6 +41,7 @@ class Writer {
 public:
    size_t size() const { return m_data.size(); }
    const std::vector<uint8_t> &data() const { return m_data; }
+   std::vector<uint8_t> TakeData() { return std::move(m_data); }
 
    void U32(uint32_t value)
    {
@@ -387,7 +389,7 @@ static void AlignNextBlock(Writer &output, uint32_t &block_id)
               zeroes.data(), zeroes.size());
 }
 
-bool WriteGFD(const GFDFile &file, const std::string &path, bool align_blocks)
+std::vector<uint8_t> SerializeGFD(const GFDFile &file, bool align_blocks)
 {
    Writer output;
    uint32_t block_id = 0;
@@ -423,10 +425,15 @@ bool WriteGFD(const GFDFile &file, const std::string &path, bool align_blocks)
    }
 
    WriteBlock(output, BlockType::EndOfFile, block_id, 0, nullptr, 0);
+   return output.TakeData();
+}
+
+bool WriteGFD(const GFDFile &file, const std::string &path, bool align_blocks)
+{
+   const std::vector<uint8_t> data = SerializeGFD(file, align_blocks);
    std::ofstream file_stream(path, std::ios::binary);
    if (!file_stream)
       return false;
-   file_stream.write(reinterpret_cast<const char *>(output.data().data()),
-                     output.data().size());
+   file_stream.write(reinterpret_cast<const char *>(data.data()), data.size());
    return file_stream.good();
 }

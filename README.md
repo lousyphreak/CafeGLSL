@@ -147,6 +147,9 @@ The desktop release includes `lib/libcafeglsl.a` and headers in
 `include/cafeglsl/`. It uses the same compile functions as the Wii U library.
 
 To save shaders to a .gsh file, include `<cafeglsl/gfd.h>`, fill in a `GFDFile` and call `WriteGFD()`.
+For in-memory output, call `SerializeGFD(file, align_blocks = false)` to receive
+an owned `std::vector<uint8_t>` with the same GFD bytes. Shader pointers in
+`GFDFile` are borrowed only during serialization; the returned bytes are independent.
 Both headers are served by the same library.
 You can also save shaders compiled on the Wii U and load them on later runs.
 

@@ -174,13 +174,19 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
       *s.error = "Native R700 has no global atomic RMW instruction (MEM_REDUCT is wave-local)";
       return false;
    case nir_intrinsic_load_ssbo:
-   case nir_intrinsic_store_ssbo: {
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_get_ssbo_size: {
       bool store = intr->intrinsic == nir_intrinsic_store_ssbo;
+      bool querySize = intr->intrinsic == nir_intrinsic_get_ssbo_size;
       unsigned si = store ? 1 : 0;
       if (!nir_src_is_const(intr->src[si])) { *s.error = "Native compute requires static buffer bindings"; return false; }
       unsigned index = nir_src_as_uint(intr->src[si]);
       unsigned slot = s.program->sh.ShaderStorageBlocks[index]->Binding;
-      if (!Resource(s, slot, GLSL_COMPUTE_BUFFER, GLSL_COMPUTE_FORMAT_BUFFER, 4, !store, store)) return false;
+      if (!Resource(s, slot, GLSL_COMPUTE_BUFFER, GLSL_COMPUTE_FORMAT_BUFFER, 4, !store && !querySize, store)) return false;
+      if (querySize) {
+         value = nir_ishl_imm(b, nir_channel(b, Layout(b, slot, 0), 1), 2);
+         break;
+      }
       if (!store) {
          if (!(nir_intrinsic_access(intr) & ACCESS_NON_WRITEABLE)) {
             *s.error = "Native compute buffer reads require readonly blocks; in-dispatch export reads need uncached READ_MEM";

@@ -474,13 +474,16 @@ bool
 VertexShader::load_input(nir_intrinsic_instr *intr)
 {
    unsigned range_base = nir_intrinsic_base(intr) + 1;
-   unsigned location = nir_intrinsic_io_semantics(intr).location;
    auto& vf = value_factory();
 
+   // Cafe validates its 32 generic slots before SFN; Mesa's fixed-function bound ends earlier.
+#ifndef CAFE_COMPILER
+   unsigned location = nir_intrinsic_io_semantics(intr).location;
    if (location >= VERT_ATTRIB_MAX) {
       fprintf(stderr, "r600-NIR: Unimplemented load_deref for %d\n", location);
       return false;
    }
+#endif
 
    for (auto [start, array] : m_input_arrays) {
       if (range_base >= start && range_base < start + array->size()) {

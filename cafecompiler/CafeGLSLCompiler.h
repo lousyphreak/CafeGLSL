@@ -17,6 +17,9 @@ typedef enum GLSL_COMPILER_FLAG {
    /* Legacy alias for GLSL_COMPILER_FLAG_PRINT_DISASSEMBLY_TO_STDERR. */
    GLSL_COMPILER_FLAG_GENERATE_DISASSEMBLY = 1 << 0,
    GLSL_COMPILER_FLAG_PRINT_DISASSEMBLY_TO_STDERR = 1 << 0,
+   /* Vertex variant for fragment PrimitiveID. Bind with GS scenario A and
+    * vertex reuse disabled; ordinary vertex compilation remains unchanged. */
+   GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID = 1 << 1,
 } GLSL_COMPILER_FLAG;
 
 typedef enum GLSLCompileMode {

@@ -13,6 +13,17 @@ By default, Wii U offers no way to compile shaders dynamically during runtime, y
 - Graphics read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
 - Wii U limitation: GX2 uses one uniform mode for both the vertex and pixel shader in each draw. You must select that mode before drawing. See [Important: choose loose uniforms or uniform blocks](#important-choose-loose-uniforms-or-uniform-blocks) below.
 
+## Fragment PrimitiveID
+
+Pixel shaders can read `gl_PrimitiveID` through a flat vertex export.
+`CompileShaderPair` selects the compatible vertex variant automatically.
+For independently compiled stages, compile the vertex shader with
+`GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID` when its pixel shader needs this input.
+This variant enables the native descriptor's primitive-ID bit and receives the
+generated ID in R0.z. Bind it with VGT GS scenario A and vertex reuse disabled;
+restore normal mode and reuse when switching to an ordinary vertex shader.
+This uses the vertex and pixel stages, without a geometry shader or ring buffers.
+
 ## Native compute library API
 
 `CompileComputeShader(source, &result, log, sizeof(log), flags)` returns

@@ -945,7 +945,7 @@ static void FillVertexRegisters(const r600_pipe_shader &pipe_shader,
    output.regs.sq_pgm_resources_vs =
       S_028868_NUM_GPRS(shader.bc.ngpr) |
       S_028868_STACK_SIZE(shader.bc.nstack);
-   output.regs.vgt_primitiveid_en = 0;
+   output.regs.vgt_primitiveid_en = S_028A84_PRIMITIVEID_EN(shader.vs_as_gs_a);
 
    for (uint32_t &value : output.regs.spi_vs_out_id)
       value = 0xffffffff;
@@ -1607,6 +1607,7 @@ GX2ShaderMode CafeCompiler::CompileVertexShader(const char *source, GLSLCompileM
                                                       GLSL_COMPILER_FLAG flags)
 {
    CompileState state;
+   state.key.vs.as_gs_a = 0 != (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
    if (!CompileFrontend(source, GL_VERTEX_SHADER, state, diagnostics) ||
        !SelectMode(requested_mode, state, nullptr, diagnostics) ||
        !PrepareNir(state, diagnostics) || !CompileR600(state, diagnostics))
@@ -1710,7 +1711,10 @@ GX2ShaderMode CafeCompiler::CompileShaderPair(const char *vertex_source, const c
    const bool warn_pixel = requested_mode == GLSL_COMPILE_AUTO &&
       pixel_state.uses_loose_uniforms && !pixel_state.NeedsUniformBlockMode() &&
       vertex_state.NeedsUniformBlockMode();
-   for (CompileState *state : {&vertex_state, &pixel_state}) {
+   for (CompileState *state : {&pixel_state, &vertex_state}) {
+      if (state == &vertex_state)
+         state->key.vs.as_gs_a = pixel_state.pipe_shader.shader.gs_prim_id_input ||
+            (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
       if (!PrepareNir(*state, diagnostics) || !CompileR600(*state, diagnostics)) {
          diagnostics = (state == &vertex_state ? "Vertex shader: " : "Pixel shader: ") +
                        diagnostics;

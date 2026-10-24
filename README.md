@@ -28,7 +28,7 @@ layout table. For each binding 0..15, upload two little-endian `uvec4` values:
 
 ```
 { exportBaseDword, sizeDwords, rowPitchDwords, layerPitchDwords }
-{ width, height, layers, 0 }
+{ width, height, layers, firstSlice3D }
 ```
 
 All writable resources use disjoint ranges of one native global export
@@ -45,9 +45,18 @@ export element byte size and read/write use. Ordinary samplers remain in
 `shader.samplerVars`. The caller owns layout dimensions, pitches, export ranges,
 resource publication, and lifetime through normal GPU retirement.
 
-RGBA32F/UI and R32F/UI export their native DWORDs. RGBA16F exports two packed
-DWORDs per texel; half conversion is GPU integer code with round-to-nearest-even,
-subnormal and infinity/NaN handling. RGBA8 exports one packed DWORD. R16F, R8 and
+Images support static 2D, 2D-array and 3D bindings. Layout dimensions describe
+the bound mip and slice range, including readonly and size-only bindings.
+For 3D images, Z addresses successive slices through `layerPitchDwords`.
+Readonly 3D inputs bind the whole native volume; their integer fetch coordinates
+add `firstSlice3D`. The compiler returns zero for loads outside the selected
+range. Set this field to zero for 2D/array images.
+Materialize each export slice into its selected tiled mip/slice before sampling.
+
+RGBA32F/UI, RG32F and R32F/UI export their native DWORDs. RG16F and RGBA16F
+export one and two packed DWORDs per texel; half conversion is GPU integer code
+with round-to-nearest-even, subnormal and infinity/NaN handling. RGBA8 exports
+one packed DWORD. R16F, R8 and
 RG8 export a quantized float4 (16 bytes per texel) to avoid adjacent lanes racing
 over sub-DWORD writes. These widened images require GPU format conversion at
 each imageStore boundary. Packed images need a matching linear surface layout

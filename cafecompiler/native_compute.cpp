@@ -224,9 +224,11 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
    case nir_intrinsic_image_deref_store: {
       auto var = nir_deref_instr_get_variable(nir_src_as_deref(intr->src[0]));
       if (!var || glsl_type_is_array(var->type) ||
-          (glsl_get_sampler_dim(var->type) != GLSL_SAMPLER_DIM_2D)) {
-         *s.error = "Native compute images require a static 2D or 2D-array binding"; return false;
+          (glsl_get_sampler_dim(var->type) != GLSL_SAMPLER_DIM_2D &&
+           glsl_get_sampler_dim(var->type) != GLSL_SAMPLER_DIM_3D)) {
+         *s.error = "Native compute images require a static 2D, 2D-array or 3D binding"; return false;
       }
+      const bool volume = glsl_get_sampler_dim(var->type) == GLSL_SAMPLER_DIM_3D;
       unsigned format, bytes;
       switch (var->data.image.format) {
       case PIPE_FORMAT_R32G32B32A32_FLOAT: format = GLSL_COMPUTE_FORMAT_RGBA32F; bytes = 16; break;
@@ -238,6 +240,8 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
       case PIPE_FORMAT_R8_UNORM: format = GLSL_COMPUTE_FORMAT_R8; bytes = 16; break;
       case PIPE_FORMAT_R32G32B32A32_UINT: format = GLSL_COMPUTE_FORMAT_RGBA32UI; bytes = 16; break;
       case PIPE_FORMAT_R32_UINT: format = GLSL_COMPUTE_FORMAT_R32UI; bytes = 4; break;
+      case PIPE_FORMAT_R16G16_FLOAT: format = GLSL_COMPUTE_FORMAT_RG16F; bytes = 4; break;
+      case PIPE_FORMAT_R32G32_FLOAT: format = GLSL_COMPUTE_FORMAT_RG32F; bytes = 8; break;
       default: *s.error = "Native compute image format has no export representation"; return false;
       }
       unsigned slot = var->data.binding;
@@ -250,21 +254,32 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
             *s.error = "Native compute imageLoad requires a readonly sampled alias; in-dispatch export reads are unsupported";
             return false;
          }
-         unsigned nc = glsl_sampler_type_is_array(var->type) ? 3 : 2;
+         unsigned nc = volume || glsl_sampler_type_is_array(var->type) ? 3 : 2;
          auto tex = nir_tex_instr_create(b->shader, 2);
          tex->op = nir_texop_txf;
-         tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+         tex->sampler_dim = glsl_get_sampler_dim(var->type);
          tex->is_array = glsl_sampler_type_is_array(var->type);
          tex->dest_type = nir_intrinsic_dest_type(intr);
          tex->texture_index = slot;
          tex->coord_components = nc;
          tex->src[0].src_type = nir_tex_src_coord;
-         tex->src[0].src = nir_src_for_ssa(nir_trim_vector(b, intr->src[1].ssa, nc));
+         auto coord = nir_trim_vector(b, intr->src[1].ssa, nc);
+         if (volume)
+            coord = nir_vec3(b, nir_channel(b, coord, 0), nir_channel(b, coord, 1),
+                            nir_iadd(b, nir_channel(b, coord, 2), nir_channel(b, dims, 3)));
+         tex->src[0].src = nir_src_for_ssa(coord);
          tex->src[1].src_type = nir_tex_src_lod;
          tex->src[1].src = nir_src_for_ssa(nir_imm_int(b, 0));
          nir_def_init(&tex->instr, &tex->def, 4, 32);
          nir_builder_instr_insert(b, &tex->instr);
          value = &tex->def;
+         if (volume) {
+            auto relative = intr->src[1].ssa;
+            auto valid = nir_iand(b, nir_ult(b, nir_channel(b, relative, 0), nir_channel(b, dims, 0)),
+               nir_iand(b, nir_ult(b, nir_channel(b, relative, 1), nir_channel(b, dims, 1)),
+                            nir_ult(b, nir_channel(b, relative, 2), nir_channel(b, dims, 2))));
+            value = nir_bcsel(b, valid, value, nir_imm_ivec4(b, 0, 0, 0, 0));
+         }
          break;
       }
       if (!store) {
@@ -274,7 +289,7 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
       auto coord = intr->src[1].ssa;
       auto layout = Layout(b, slot, 0);
       auto x = nir_channel(b, coord, 0), y = nir_channel(b, coord, 1);
-      auto z = glsl_sampler_type_is_array(var->type) ? nir_channel(b, coord, 2) : nir_imm_int(b, 0);
+      auto z = volume || glsl_sampler_type_is_array(var->type) ? nir_channel(b, coord, 2) : nir_imm_int(b, 0);
       auto valid = nir_iand(b, nir_ult(b, x, nir_channel(b, dims, 0)),
          nir_iand(b, nir_ult(b, y, nir_channel(b, dims, 1)), nir_ult(b, z, nir_channel(b, dims, 2))));
       auto offset = nir_iadd(b, nir_imul_imm(b, x, bytes / 4),
@@ -283,6 +298,10 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
       if (format == GLSL_COMPUTE_FORMAT_RGBA16F) {
          payload = nir_vec2(b, PackHalf(b, nir_channels(b, payload, 3)),
                               PackHalf(b, nir_channels(b, payload, 12)));
+      } else if (format == GLSL_COMPUTE_FORMAT_RG16F) {
+         payload = PackHalf(b, nir_channels(b, payload, 3));
+      } else if (format == GLSL_COMPUTE_FORMAT_RG32F) {
+         payload = nir_channels(b, payload, 3);
       } else if (format == GLSL_COMPUTE_FORMAT_RGBA8) {
          payload = PackUnorm(b, payload);
       } else if (format == GLSL_COMPUTE_FORMAT_R32F || format == GLSL_COMPUTE_FORMAT_R32UI) {

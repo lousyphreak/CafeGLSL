@@ -46,8 +46,10 @@ GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requestedMo
                                        int infoLogMaxLength, GLSL_COMPILER_FLAG flags);
 /* Compute resource/layout ABI version 1. Block 15 is reserved for 16 entries,
  * each two little-endian uvec4s: {baseDword, sizeDwords, rowPitchDwords,
- * layerPitchDwords}, {width, height, layers, 0}. All writable slots address the
+ * layerPitchDwords}, {width, height, layers, firstSlice3D}. All writable slots address the
  * one GX2 shader export allocation. Sampled inputs retain their native slots.
+ * firstSlice3D is zero for 2D/array images; 3D sampled inputs bind the whole
+ * volume and add this slice origin to integer Z coordinates.
  * Images smaller than a DWORD use a widened, quantized float4 intermediate;
  * the renderer must convert it at the imageStore boundary before sampling.
  * shader.workGroupSizeX/Y/Z retain logical dimensions. With
@@ -72,6 +74,8 @@ typedef enum GLSLComputeFormat {
    GLSL_COMPUTE_FORMAT_R8 = 7,
    GLSL_COMPUTE_FORMAT_RGBA32UI = 8,
    GLSL_COMPUTE_FORMAT_R32UI = 9,
+   GLSL_COMPUTE_FORMAT_RG16F = 10,
+   GLSL_COMPUTE_FORMAT_RG32F = 11,
 } GLSLComputeFormat;
 typedef struct GLSLComputeResource {
    uint32_t binding, kind, format, elementBytes;

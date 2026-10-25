@@ -79,6 +79,13 @@ GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requested_
                                         GX2VertexShader **shader_output, char *info_log,
                                         int info_log_size, GLSL_COMPILER_FLAG flags)
 {
+   return CompileVertexShaderEx(source, requested_mode, shader_output, info_log, info_log_size, flags, nullptr);
+}
+
+GX2ShaderMode CompileVertexShaderEx(const char *source, GLSLCompileMode requested_mode,
+                                        GX2VertexShader **shader_output, char *info_log,
+                                        int info_log_size, GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
+{
    std::lock_guard<std::mutex> lock(compiler_mutex);
    std::string diagnostics;
    GX2ShaderMode requirement = GLSL_SHADER_MODE_ERROR;
@@ -92,7 +99,7 @@ GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requested_
    else if (!compiler->valid())
       diagnostics = compiler->initialization_error();
    else
-      requirement = compiler->CompileVertexShader(source, requested_mode, *shader_output, diagnostics, flags);
+      requirement = compiler->CompileVertexShader(source, requested_mode, *shader_output, diagnostics, flags, resources);
 
    CopyDiagnostics(diagnostics, info_log, info_log_size);
    return requirement;
@@ -101,6 +108,13 @@ GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requested_
 GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requested_mode,
                                        GX2PixelShader **shader_output, char *info_log,
                                        int info_log_size, GLSL_COMPILER_FLAG flags)
+{
+   return CompilePixelShaderEx(source, requested_mode, shader_output, info_log, info_log_size, flags, nullptr);
+}
+
+GX2ShaderMode CompilePixelShaderEx(const char *source, GLSLCompileMode requested_mode,
+                                       GX2PixelShader **shader_output, char *info_log,
+                                       int info_log_size, GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
 {
    std::lock_guard<std::mutex> lock(compiler_mutex);
    std::string diagnostics;
@@ -115,7 +129,7 @@ GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requested_m
    else if (!compiler->valid())
       diagnostics = compiler->initialization_error();
    else
-      requirement = compiler->CompilePixelShader(source, requested_mode, *shader_output, diagnostics, flags);
+      requirement = compiler->CompilePixelShader(source, requested_mode, *shader_output, diagnostics, flags, resources);
 
    CopyDiagnostics(diagnostics, info_log, info_log_size);
    return requirement;

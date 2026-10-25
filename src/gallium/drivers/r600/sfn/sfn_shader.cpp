@@ -882,6 +882,22 @@ Shader::emit_tex_fdd(const nir_intrinsic_instr* intr, int opcode, bool fine)
 bool
 Shader::process_intrinsic(nir_intrinsic_instr *intr)
 {
+#ifdef CAFE_COMPILER
+   if (chip_class() == ISA_CC_R700 && intr->intrinsic == nir_intrinsic_store_global) {
+      auto &vf = value_factory();
+      auto addr = vf.temp_register(0);
+      emit_instruction(new AluInstr(op2_lshr_int, addr, vf.src(intr->src[1], 0), vf.literal(2), AluInstr::write));
+      unsigned n = nir_src_num_components(intr->src[0]);
+      RegisterVec4::Swizzle swz = {7, 7, 7, 7};
+      for (unsigned i = 0; i < n; ++i) swz[i] = i;
+      auto value = vf.temp_vec4(pin_group, swz);
+      for (unsigned i = 0; i < n; ++i)
+         emit_instruction(new AluInstr(op1_mov, value[i], vf.src(intr->src[0], i), AluInstr::write));
+      emit_instruction(new MemRingOutInstr(cf_mem_export, MemRingOutInstr::mem_write_ind, value, 0, n, addr));
+      set_flag(sh_writes_memory);
+      return true;
+   }
+#endif
    if (process_stage_intrinsic(intr))
       return true;
 
@@ -1308,6 +1324,25 @@ Shader::emit_load_scratch(nir_intrinsic_instr *intr)
 bool Shader::emit_load_global(nir_intrinsic_instr *intr)
 {
    auto dest = value_factory().dest_vec4(intr->def, pin_group);
+#ifdef CAFE_COMPILER
+   if (chip_class() == ISA_CC_R700 && intr->intrinsic == nir_intrinsic_load_global) {
+      auto &vf = value_factory();
+      auto addr = vf.temp_register();
+      emit_instruction(new AluInstr(op2_lshr_int, addr, vf.src(intr->src[0], 0), vf.literal(2), AluInstr::write));
+      RegisterVec4::Swizzle swz = {7, 7, 7, 7};
+      for (unsigned i = 0; i < intr->def.num_components; ++i) swz[i] = i;
+      auto load = new FetchInstr(vc_read_mem, dest, swz, addr, 0, no_index_offset,
+         intr->def.num_components == 4 ? fmt_32_32_32_32 : intr->def.num_components == 2 ? fmt_32_32 : fmt_32,
+         vtx_nf_int, vtx_es_none, 0, nullptr);
+      load->set_element_size(intr->def.num_components - 1);
+      load->set_fetch_flag(FetchInstr::uncached);
+      load->set_fetch_flag(FetchInstr::indexed);
+      load->set_fetch_flag(FetchInstr::vpm);
+      chain_ssbo_read(load);
+      emit_instruction(load);
+      return true;
+   }
+#endif
 
    auto src_value = value_factory().src(intr->src[0], 0);
    auto src = src_value->as_register();
@@ -1470,6 +1505,15 @@ Shader::InstructionChain::visit(GDSInstr *instr)
    if (last_kill_instr)
       instr->add_required_instr(last_kill_instr);
 
+}
+
+void
+Shader::InstructionChain::visit(MemRingOutInstr *instr)
+{
+   if (instr->op() != CF_OP_MEM_EXPORT) return;
+   apply(instr, &last_ssbo_instr);
+   if (last_kill_instr) instr->add_required_instr(last_kill_instr);
+   for (auto &loop : this_shader->m_loops) loop->set_instr_flag(Instr::vpm);
 }
 
 void

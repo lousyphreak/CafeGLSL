@@ -182,6 +182,7 @@ enum EVFetchInstr {
    vc_semantic = FETCH_OP_SEMFETCH,
    vc_get_buf_resinfo = FETCH_OP_GET_BUFFER_RESINFO,
    vc_read_scratch = FETCH_OP_READ_SCRATCH,
+   vc_read_mem = FETCH_OP_READ_MEM,
    vc_unknown
 };
 

@@ -29,10 +29,10 @@ public:
                                      std::string &diagnostics, GLSL_COMPILER_FLAG flags);
    GX2ShaderMode CompileVertexShader(const char *source, GLSLCompileMode requested_mode,
                                            GX2VertexShader *&shader_output, std::string &diagnostics,
-                                           GLSL_COMPILER_FLAG flags);
+                                           GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources = nullptr);
    GX2ShaderMode CompilePixelShader(const char *source, GLSLCompileMode requested_mode,
                                           GX2PixelShader *&shader_output, std::string &diagnostics,
-                                          GLSL_COMPILER_FLAG flags);
+                                          GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources = nullptr);
    GX2ShaderMode CompileShaderPair(const char *vertex_source, const char *pixel_source,
                                          GLSLCompileMode requested_mode, GX2VertexShader *&vertex_output,
                                          GX2PixelShader *&pixel_output,

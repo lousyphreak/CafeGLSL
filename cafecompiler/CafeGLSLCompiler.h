@@ -84,6 +84,18 @@ typedef struct GLSLComputeResource {
    uint32_t binding, kind, format, elementBytes;
    uint32_t read, write;
 } GLSLComputeResource;
+typedef struct GLSLShaderResources {
+   uint32_t resourceCount;
+   GLSLComputeResource resources[16];
+} GLSLShaderResources;
+/* Graphics image accesses use the same block-15/export-region layout as compute.
+ * Existing entry points remain valid for shaders without images. */
+GX2ShaderMode CompileVertexShaderEx(const char *source, GLSLCompileMode requestedMode,
+   GX2VertexShader **shaderOut, char *infoLogOut, int infoLogMaxLength,
+   GLSL_COMPILER_FLAG flags, GLSLShaderResources *resourcesOut);
+GX2ShaderMode CompilePixelShaderEx(const char *source, GLSLCompileMode requestedMode,
+   GX2PixelShader **shaderOut, char *infoLogOut, int infoLogMaxLength,
+   GLSL_COMPILER_FLAG flags, GLSLShaderResources *resourcesOut);
 typedef struct GLSLComputeShader {
    GX2ComputeShader shader;
    uint32_t resourceCount;

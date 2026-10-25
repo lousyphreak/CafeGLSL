@@ -382,7 +382,7 @@ private:
       void visit(Block *instr) override { (void)instr; }
       void visit(ControlFlowInstr *instr) override { (void)instr; }
       void visit(StreamOutInstr *instr) override { (void)instr; }
-      void visit(MemRingOutInstr *instr) override { (void)instr; }
+      void visit(MemRingOutInstr *instr) override;
       void visit(EmitVertexInstr *instr) override { (void)instr; }
       void visit(WriteTFInstr *instr) override { (void)instr; }
       void visit(LDSAtomicInstr *instr) override { (void)instr; }

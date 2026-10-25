@@ -54,6 +54,9 @@ FetchInstr::FetchInstr(EVFetchInstr opcode,
       set_print_skip(ftype);
       m_opname = "GET_BUF_RESINFO";
       break;
+   case vc_read_mem:
+      m_opname = "READ_MEM";
+      break;
    case vc_read_scratch:
       m_opname = "READ_SCRATCH";
       break;

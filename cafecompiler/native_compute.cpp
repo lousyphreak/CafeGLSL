@@ -8,7 +8,9 @@
 namespace {
 struct Lowering {
    gl_program *program;
-   GLSLComputeShader *output;
+   uint32_t *count;
+   GLSLComputeResource *resources;
+   bool graphics;
    std::string *error;
 };
 
@@ -78,8 +80,8 @@ bool Resource(Lowering &s, unsigned slot, unsigned kind, unsigned format,
               unsigned bytes, bool read, bool write)
 {
    if (slot >= 16) { *s.error = "Native compute resource binding must be in 0..15"; return false; }
-   for (unsigned i = 0; i < s.output->resourceCount; ++i) {
-      auto &r = s.output->resources[i];
+   for (unsigned i = 0; i < *s.count; ++i) {
+      auto &r = s.resources[i];
       if (r.binding != slot) continue;
       if (r.kind != kind || r.format != format) {
          *s.error = "Native compute buffer/image bindings overlap";
@@ -88,7 +90,7 @@ bool Resource(Lowering &s, unsigned slot, unsigned kind, unsigned format,
       r.read |= read; r.write |= write;
       return true;
    }
-   s.output->resources[s.output->resourceCount++] = {slot, kind, format, bytes, read, write};
+   s.resources[(*s.count)++] = {slot, kind, format, bytes, read, write};
    return true;
 }
 
@@ -138,7 +140,7 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
    auto intr = nir_instr_as_intrinsic(instr);
    b->cursor = nir_before_instr(instr);
    nir_def *value = nullptr;
-   if (GroupSize(b->shader) > 64 &&
+   if (!s.graphics && GroupSize(b->shader) > 64 &&
        (intr->intrinsic == nir_intrinsic_barrier ||
         (nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_SUBGROUP))) {
       *s.error = "Native GPU7 cannot split logical workgroups containing barriers or subgroup communication across 64-lane waves";
@@ -163,7 +165,8 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
    case nir_intrinsic_barrier:
       if (nir_intrinsic_execution_scope(intr) > SCOPE_WORKGROUP ||
           (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared)) {
-         *s.error = "Native GPU7 compute cannot synchronize groups or global memory";
+         *s.error = s.graphics ? "Graphics image memory barriers are not implemented" :
+            "Native GPU7 compute cannot synchronize groups or global memory";
          return false;
       }
       nir_instr_remove(instr); return true;
@@ -176,6 +179,7 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_get_ssbo_size: {
+      if (s.graphics) return false; // Existing readonly graphics SSBO path is independent.
       bool store = intr->intrinsic == nir_intrinsic_store_ssbo;
       bool querySize = intr->intrinsic == nir_intrinsic_get_ssbo_size;
       unsigned si = store ? 1 : 0;
@@ -255,8 +259,36 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
       bool load = intr->intrinsic == nir_intrinsic_image_deref_load;
       if (!Resource(s, slot, GLSL_COMPUTE_IMAGE, format, bytes, load, store)) return false;
       auto dims = Layout(b, slot, 1);
+      if (load && s.graphics) {
+         auto layout = Layout(b, slot, 0);
+         auto coord = intr->src[1].ssa;
+         auto x = nir_channel(b, coord, 0), y = nir_channel(b, coord, 1);
+         auto z = volume || glsl_sampler_type_is_array(var->type) ? nir_channel(b, coord, 2) : nir_imm_int(b, 0);
+         auto valid = nir_iand(b, nir_ult(b, x, nir_channel(b, dims, 0)),
+            nir_iand(b, nir_ult(b, y, nir_channel(b, dims, 1)), nir_ult(b, z, nir_channel(b, dims, 2))));
+         auto offset = nir_iadd(b, nir_channel(b, layout, 0), nir_iadd(b, nir_imul_imm(b, x, bytes / 4),
+            nir_iadd(b, nir_imul(b, y, nir_channel(b, layout, 2)), nir_imul(b, z, nir_channel(b, layout, 3)))));
+         // SCATTER reads are uncached and DWORD-addressed by the SFN backend.
+         value = nir_load_global(b, bytes / 4, 32, nir_ishl_imm(b, offset, 2), .align_mul = 4);
+         if (format == GLSL_COMPUTE_FORMAT_RGBA8) value = UnpackUnorm(b, value);
+         else if (format == GLSL_COMPUTE_FORMAT_RGBA16F)
+            value = nir_vec4(b, nir_channel(b, UnpackHalf(b, nir_channel(b, value, 0)), 0),
+               nir_channel(b, UnpackHalf(b, nir_channel(b, value, 0)), 1),
+               nir_channel(b, UnpackHalf(b, nir_channel(b, value, 1)), 0),
+               nir_channel(b, UnpackHalf(b, nir_channel(b, value, 1)), 1));
+         else if (format == GLSL_COMPUTE_FORMAT_RG16F) value = UnpackHalf(b, value);
+         if (value->num_components < 4) {
+            nir_def *components[4];
+            for (unsigned c = 0; c < 4; ++c)
+               components[c] = c < value->num_components ? nir_channel(b, value, c) :
+                  nir_imm_int(b, c == 3 ? (format == GLSL_COMPUTE_FORMAT_R32UI ? 1 : 0x3f800000) : 0);
+            value = nir_vec(b, components, 4);
+         }
+         value = nir_bcsel(b, valid, value, nir_imm_ivec4(b, 0, 0, 0, 0));
+         break;
+      }
       if (load) {
-         if (!(var->data.access & ACCESS_NON_WRITEABLE)) {
+         if (!s.graphics && !(var->data.access & ACCESS_NON_WRITEABLE)) {
             *s.error = "Native compute imageLoad requires a readonly sampled alias; in-dispatch export reads are unsupported";
             return false;
          }
@@ -351,7 +383,7 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
       if (var->data.binding == 15) { error = "Compute uniform block 15 is reserved for native resource layouts"; return false; }
    }
-   Lowering state{program, &output, &error};
+   Lowering state{program, &output.resourceCount, output.resources, false, &error};
    nir_shader_instructions_pass(nir, Lower, nir_metadata_none, &state);
    if (!error.empty()) return false;
    if (count % 64 != 0) {
@@ -367,6 +399,20 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
    }
    nir_opt_dce(nir);
    nir_remove_dead_variables(nir, nir_var_image | nir_var_mem_ssbo, nullptr);
+   return true;
+}
+
+bool LowerNativeImages(nir_shader *nir, gl_program *program, GLSLShaderResources &output, std::string &error)
+{
+   if (nir->info.num_images == 0) return true;
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      if (var->data.binding == 15) { error = "Graphics uniform block 15 is reserved for image layouts"; return false; }
+   }
+   Lowering state{program, &output.resourceCount, output.resources, true, &error};
+   nir_shader_instructions_pass(nir, Lower, nir_metadata_none, &state);
+   if (!error.empty()) return false;
+   nir_opt_dce(nir);
+   nir_remove_dead_variables(nir, nir_var_image, nullptr);
    return true;
 }
 

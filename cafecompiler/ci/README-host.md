@@ -181,3 +181,19 @@ If you compile them separately, compile the vertex shader with
 
 Licensed under the MIT license, as Mesa is.
 See [LICENSE](LICENSE) and [Mesa's license information](https://docs.mesa3d.org/license.html) for third-party licensing.
+
+## Graphics image read/write
+
+`CompileVertexShaderEx` and `CompilePixelShaderEx` additionally fill
+`GLSLShaderResources`. Ordinary compilation/freeing and the native GX2 shader
+structures are unchanged. Images select uniform-block mode and reserve block 15
+for the same 16-entry layout documented beside `GLSLComputeShader` in the public
+header. A caller using the older entry points must supply that layout itself.
+
+Graphics image loads use native uncached R700 SCATTER/READ_MEM from the global
+shader export allocation. Stores use MEM_EXPORT, with format packing in the
+shader; there is no RAT dependency. All concurrently executing stages share one
+export allocation and layout. The caller must publish dependent draws with the
+GX2 export-buffer transition and materialize linear image data before ordinary
+texture consumers. Global atomics and inter-invocation synchronization are not
+implemented.

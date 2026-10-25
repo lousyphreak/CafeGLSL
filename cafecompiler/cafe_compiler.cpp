@@ -1173,10 +1173,11 @@ struct CafeCompiler::CompileState {
    std::unordered_map<std::string, unsigned> sampler_bindings;
    ReflectionInfo reflection;
    GLSLComputeShader compute{};
+   GLSLShaderResources graphicsResources{};
 
    bool NeedsUniformBlockMode() const
    {
-      return uses_uniform_blocks ||
+      return uses_uniform_blocks || (nir && nir->info.num_images != 0) ||
          (uses_loose_uniforms && program->Parameters &&
           program->Parameters->NumParameterValues > kMaxAluConstComponents);
    }
@@ -1278,6 +1279,7 @@ bool CafeCompiler::InitializeContext()
    for (mesa_shader_stage stage : {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT, MESA_SHADER_COMPUTE}) {
       m_ctx->Const.Program[stage].MaxTextureImageUnits = kMaxSamplers;
       m_ctx->Const.Program[stage].MaxUniformBlocks = kMaxUniformBlocks;
+      m_ctx->Const.Program[stage].MaxImageUniforms = 16;
       m_ctx->Const.Program[stage].MaxShaderStorageBlocks = kMaxReadonlyBuffers;
       m_ctx->Const.Program[stage].MaxUniformComponents = 16 * 1024;
       m_ctx->Const.Program[stage].MaxCombinedUniformComponents =
@@ -1407,8 +1409,8 @@ bool CafeCompiler::SelectMode(GLSLCompileMode requested_mode, CompileState &firs
    if (requested_mode == GLSL_COMPILE_REGISTER && needs_blocks) {
       const CompileState &state = first.NeedsUniformBlockMode() ? first : *second;
       diagnostics = state.stage == MESA_SHADER_VERTEX ? "Vertex shader: " : "Pixel shader: ";
-      diagnostics += state.uses_uniform_blocks ?
-         "Explicit uniform blocks cannot use register mode" :
+      diagnostics += state.nir->info.num_images ? "Graphics images require uniform block 15" :
+         state.uses_uniform_blocks ? "Explicit uniform blocks cannot use register mode" :
          "Non-block uniforms exceed Latte's 1024-component ALU constant file";
       diagnostics += ". Use GLSL_COMPILE_AUTO or GLSL_COMPILE_BLOCK (CLI: --uniform-mode auto or block)";
       return false;
@@ -1503,6 +1505,9 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
    if (!RemapUbos(state.nir, state.ubo_bindings, diagnostics))
       return false;
 
+   if (state.stage != MESA_SHADER_COMPUTE &&
+       !LowerNativeImages(state.nir, state.program, state.graphicsResources, diagnostics))
+      return false;
    if (state.stage == MESA_SHADER_COMPUTE &&
        !LowerNativeCompute(state.nir, state.program, state.compute, diagnostics))
       return false;
@@ -1604,7 +1609,7 @@ GX2ShaderMode CafeCompiler::CompileComputeShader(const char *source, GLSLCompute
 
 GX2ShaderMode CafeCompiler::CompileVertexShader(const char *source, GLSLCompileMode requested_mode,
                                                       GX2VertexShader *&shader_output, std::string &diagnostics,
-                                                      GLSL_COMPILER_FLAG flags)
+                                                      GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
 {
    CompileState state;
    state.key.vs.as_gs_a = 0 != (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
@@ -1616,6 +1621,7 @@ GX2ShaderMode CafeCompiler::CompileVertexShader(const char *source, GLSLCompileM
    GX2VertexShader *shader = CreateVertexShader(state, diagnostics, flags);
    if (!shader)
       return GLSL_SHADER_MODE_ERROR;
+   if (resources) *resources = state.graphicsResources;
    shader_output = shader;
    return state.requirement;
 }
@@ -1648,7 +1654,7 @@ GX2VertexShader *CafeCompiler::CreateVertexShader(CompileState &state,
 
 GX2ShaderMode CafeCompiler::CompilePixelShader(const char *source, GLSLCompileMode requested_mode,
                                                      GX2PixelShader *&shader_output, std::string &diagnostics,
-                                                     GLSL_COMPILER_FLAG flags)
+                                                     GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
 {
    CompileState state;
    if (!CompileFrontend(source, GL_FRAGMENT_SHADER, state, diagnostics) ||
@@ -1659,6 +1665,7 @@ GX2ShaderMode CafeCompiler::CompilePixelShader(const char *source, GLSLCompileMo
    GX2PixelShader *shader = CreatePixelShader(state, diagnostics, flags);
    if (!shader)
       return GLSL_SHADER_MODE_ERROR;
+   if (resources) *resources = state.graphicsResources;
    shader_output = shader;
    return state.requirement;
 }
@@ -1682,6 +1689,9 @@ GX2PixelShader *CafeCompiler::CreatePixelShader(CompileState &state,
       return nullptr;
    }
    FillPixelRegisters(state.pipe_shader, *output);
+   // Image side effects must execute even for fragments that fail late depth.
+   if (state.graphicsResources.resourceCount && !state.nir->info.fs.early_fragment_tests)
+      output->regs.db_shader_control &= ~S_02880C_Z_ORDER(3);
 
    if (flags & GLSL_COMPILER_FLAG_GENERATE_DISASSEMBLY)
       r600_bytecode_disasm(&state.pipe_shader.shader.bc);

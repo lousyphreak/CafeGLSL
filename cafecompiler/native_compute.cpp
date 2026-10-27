@@ -4,6 +4,7 @@
 #include "compiler/glsl_types.h"
 #include "main/mtypes.h"
 #include "util/format/u_formats.h"
+#include <vector>
 
 namespace {
 struct Lowering {
@@ -40,6 +41,121 @@ bool OwnerOffset(nir_scalar s, uint32_t &base, uint32_t &scale)
    }
    if (x && y) return false;
    base = a*b; scale = x*b+y*a; return true;
+}
+
+// Re-evaluate an affine lane address for another owner. Uniform terms retain
+// their original SSA values; no memory access or floating-point math is cloned.
+bool LaneAddress(nir_def *def, nir_block *use)
+{
+   if (!nir_def_is_divergent_at_use_block(def, use)) return true;
+   auto instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_intrinsic)
+      return nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_local_invocation_index;
+   if (instr->type != nir_instr_type_alu) return false;
+   auto alu = nir_instr_as_alu(instr);
+   if (alu->op != nir_op_mov && alu->op != nir_op_iadd &&
+       alu->op != nir_op_imul && alu->op != nir_op_ishl) return false;
+   unsigned varying = 0;
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; ++i) {
+      varying += nir_def_is_divergent_at_use_block(alu->src[i].src.ssa, use);
+      if (!LaneAddress(alu->src[i].src.ssa, use)) return false;
+   }
+   return varying <= 1;
+}
+
+nir_def *LaneAddress(nir_builder *b, nir_def *def, nir_block *use, nir_def *lane)
+{
+   if (!nir_def_is_divergent_at_use_block(def, use)) return def;
+   auto instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_intrinsic) return lane;
+   auto alu = nir_instr_as_alu(nir_instr_clone(b->shader, instr));
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; ++i)
+      alu->src[i].src = nir_src_for_ssa(LaneAddress(b, alu->src[i].src.ssa, use, lane));
+   nir_builder_instr_insert(b, &alu->instr);
+   return &alu->def;
+}
+
+bool InsideLoop(nir_block *block, nir_loop *loop)
+{
+   for (auto node = block->cf_node.parent; node; node = node->parent)
+      if (node == &loop->cf_node) return true;
+   return false;
+}
+
+// Forward a complete owner-indexed readonly-buffer copy through a shared cache.
+// The cache loop cannot write global memory, so all lanes observe the same source
+// values at the forwarded reads. Other shared-memory patterns keep native LDS.
+bool ForwardReadonlyShared(nir_shader *shader)
+{
+   auto impl = nir_shader_get_entrypoint(shader);
+   nir_intrinsic_instr *store = nullptr;
+   std::vector<nir_intrinsic_instr *> reads;
+   nir_foreach_block(block, impl) nir_foreach_instr(instr, block) {
+      if (instr->type != nir_instr_type_intrinsic) continue;
+      auto intr = nir_instr_as_intrinsic(instr);
+      if (intr->intrinsic == nir_intrinsic_shared_atomic ||
+          intr->intrinsic == nir_intrinsic_shared_atomic_swap) return false;
+      if (intr->intrinsic == nir_intrinsic_store_shared) {
+         if (store) return false;
+         store = intr;
+      } else if (intr->intrinsic == nir_intrinsic_load_shared) reads.push_back(intr);
+   }
+   if (!store || reads.empty() || store->instr.block->divergent) return false;
+   unsigned n = store->src[0].ssa->num_components;
+   uint32_t base, scale;
+   if (store->src[0].ssa->bit_size != 32 ||
+       nir_intrinsic_write_mask(store) != (1u << n)-1 ||
+       !OwnerOffset({store->src[1].ssa, 0}, base, scale) ||
+       base + nir_intrinsic_base(store) != 0 ||
+       !util_is_power_of_two_nonzero(scale) || scale < 4*n || scale > 16 ||
+       shader->info.shared_size > 64*scale) return false;
+   auto scalar = nir_scalar_resolved(store->src[0].ssa, 0);
+   if (nir_def_instr(scalar.def)->type != nir_instr_type_intrinsic) return false;
+   auto source = nir_instr_as_intrinsic(nir_def_instr(scalar.def));
+   if (source->intrinsic != nir_intrinsic_load_ssbo ||
+       !nir_src_is_const(source->src[0]) ||
+       !(nir_intrinsic_access(source) & ACCESS_NON_WRITEABLE) ||
+       (nir_intrinsic_access(source) & (ACCESS_VOLATILE | ACCESS_COHERENT)) ||
+       !LaneAddress(source->src[1].ssa, store->instr.block)) return false;
+   for (unsigned c = 0; c < n; ++c) {
+      auto value = nir_scalar_resolved(store->src[0].ssa, c);
+      if (value.def != scalar.def || value.comp != c) return false;
+   }
+   nir_loop *loop = nullptr;
+   for (auto node = store->instr.block->cf_node.parent; node; node = node->parent)
+      if (node->type == nir_cf_node_loop) { loop = nir_cf_node_as_loop(node); break; }
+   if (!loop || nir_loop_is_divergent(loop) || !InsideLoop(source->instr.block, loop)) return false;
+   nir_foreach_block_in_cf_node(block, &loop->cf_node) nir_foreach_instr(instr, block) {
+      if (instr->type == nir_instr_type_call) return false;
+      if (instr->type != nir_instr_type_intrinsic) continue;
+      auto intr = nir_instr_as_intrinsic(instr);
+      if (intr == store) continue;
+      if (intr->intrinsic == nir_intrinsic_barrier) {
+         if (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared) return false;
+      } else if (!(nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_CAN_ELIMINATE)) return false;
+   }
+   nir_metadata_require(impl, nir_metadata_dominance);
+   for (auto read : reads) {
+      if (!InsideLoop(read->instr.block, loop) || read->def.num_components != n ||
+          read->def.bit_size != 32 || nir_intrinsic_align(read) < scale ||
+          !nir_block_dominates(store->instr.block, read->instr.block) ||
+          (store->instr.block == read->instr.block && !nir_instr_is_before(&store->instr, &read->instr))) return false;
+   }
+   nir_builder b = nir_builder_create(impl);
+   for (auto read : reads) {
+      b.cursor = nir_before_instr(&read->instr);
+      auto lane = nir_ushr_imm(&b, nir_iadd_imm(&b, read->src[0].ssa, nir_intrinsic_base(read)), util_logbase2(scale));
+      auto copy = nir_instr_as_intrinsic(nir_instr_clone(shader, &source->instr));
+      copy->src[1] = nir_src_for_ssa(LaneAddress(&b, source->src[1].ssa, store->instr.block, lane));
+      copy->num_components = copy->def.num_components = n;
+      nir_builder_instr_insert(&b, &copy->instr);
+      nir_def_rewrite_uses(&read->def, &copy->def);
+      nir_instr_remove(&read->instr);
+   }
+   nir_instr_remove(&store->instr);
+   shader->info.shared_size = 0;
+   nir_metadata_invalidate(shader);
+   return true;
 }
 
 bool LowerLds(nir_builder *b, nir_instr *instr, void *data)
@@ -457,11 +573,13 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
                  std::to_string(count) + " lanes, " + std::to_string(nir->info.shared_size) + " shared bytes)";
          return false;
       }
-      // Explicit IO excludes the last vec3's tail padding; hardware slots are vec4.
-      nir->info.shared_size = (nir->info.shared_size + 1023) & ~1023u;
       nir_divergence_analysis(nir);
-      nir_shader_instructions_pass(nir, LowerLds, nir_metadata_none, &error);
-      if (!error.empty()) return false;
+      if (!ForwardReadonlyShared(nir)) {
+         // Explicit IO excludes the last vec3's tail padding; hardware slots are vec4.
+         nir->info.shared_size = (nir->info.shared_size + 1023) & ~1023u;
+         nir_shader_instructions_pass(nir, LowerLds, nir_metadata_none, &error);
+         if (!error.empty()) return false;
+      }
    }
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
       if (var->data.binding == 15) { error = "Compute uniform block 15 is reserved for native resource layouts"; return false; }

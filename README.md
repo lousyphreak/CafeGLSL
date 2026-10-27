@@ -139,6 +139,17 @@ including exchanges spanning multiple clauses. This is a conservative residency
 limit; relative LDS allocation with more resident waves remains future work.
 No new renderer flush, allocation, copy, or CPU/GPU wait is required.
 
+A readonly-buffer cache copy can be eliminated before native LDS lowering. The
+compiler proves one complete owner-indexed scalar/vector array initialization,
+a direct readonly source load, replayable lane-address arithmetic, a uniform
+cache loop without global writes or non-shared barriers, and initialization
+dominating every shared read. It then forwards those reads to the original
+unchanged source, preserving payload bits. Other shared-memory uses retain LDS
+and its residency limit. No shader names, application uniforms or force formulas
+participate in this transformation. Arrays with scalar/vec2 stride can be handled
+this way when the entire shared copy disappears; their native LDS layout remains
+unsupported.
+
 See the [AMD R700 ISA](https://www.amd.com/system/files/TechDocs/R700-Family_Instruction_Set_Architecture.pdf),
 sections 2.6.2, 8 and 10.6, for native LDS instruction constraints.
 

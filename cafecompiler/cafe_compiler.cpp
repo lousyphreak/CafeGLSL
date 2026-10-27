@@ -1109,8 +1109,9 @@ static bool CopyProgram(const r600_shader &shader, void *&program, uint32_t &siz
    return true;
 }
 
-static void RemapLatteResources(r600_bytecode &bytecode)
+static void RemapLatteResources(r600_bytecode &bytecode, GLSLComputeResource *resources, unsigned resourceCount)
 {
+   unsigned fetchComponents[kMaxReadonlyBuffers] = {};
    for (list_head *cf_node = bytecode.cf.next;
         cf_node != &bytecode.cf;
         cf_node = cf_node->next) {
@@ -1137,10 +1138,22 @@ static void RemapLatteResources(r600_bytecode &bytecode)
             // Read-only SSBOs use buffer descriptors in the texture resource bank.
             // Their stride, format and byte order come from the bound resource.
             vertex_fetch->buffer_id -= R600_IMAGE_REAL_RESOURCE_OFFSET;
+            const unsigned selectors[] = {vertex_fetch->dst_sel_x, vertex_fetch->dst_sel_y,
+                                          vertex_fetch->dst_sel_z, vertex_fetch->dst_sel_w};
+            for (unsigned selector : selectors)
+               if (selector < 4)
+                  fetchComponents[vertex_fetch->buffer_id] =
+                     std::max(fetchComponents[vertex_fetch->buffer_id], selector + 1);
             vertex_fetch->use_const_fields = 1;
          }
       }
    }
+   // Reflect final native reads, after vector shrinking and scheduling. One
+   // descriptor serves all reads of a binding, so retain its widest fetch.
+   static constexpr unsigned formats[] = {0, 13, 29, 47, 34};
+   for (unsigned i = 0; i < resourceCount; ++i)
+      if (resources[i].kind == GLSL_COMPUTE_BUFFER)
+         resources[i].format = formats[fetchComponents[resources[i].binding]];
 }
 
 static unsigned FragmentColorBufferCount(const nir_shader *nir)
@@ -1564,7 +1577,9 @@ bool CafeCompiler::CompileR600(CompileState &state, std::string &diagnostics)
       return false;
    }
 
-   RemapLatteResources(state.pipe_shader.shader.bc);
+   RemapLatteResources(state.pipe_shader.shader.bc,
+      state.stage == MESA_SHADER_COMPUTE ? state.compute.resources : state.graphicsResources.resources,
+      state.stage == MESA_SHADER_COMPUTE ? state.compute.resourceCount : state.graphicsResources.resourceCount);
    if (r600_bytecode_build(&state.pipe_shader.shader.bc)) {
       diagnostics = "Failed to encode R600 bytecode";
       return false;

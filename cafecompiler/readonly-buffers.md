@@ -61,9 +61,15 @@ when `USE_CONST_FIELDS` is set, enabling the per-resource byte-order selection:
 ## Compute vectors
 
 Native compute accepts one to four aligned 32-bit components in a buffer load.
-Bind compute raw-buffer descriptors with `DATA_FORMAT=32_32_32_32` (34), keeping
-`STRIDE=4`, integer number format and the backing's endian mode. The compiler
+Compute resource reflection reports the widest source component selected by
+any final native VFETCH of each binding. Its existing `format` field contains
+native `DATA_FORMAT` 13, 29, 47 or 34 for one, two, three or four DWORDs.
+The renderer binds this format while keeping `STRIDE=4`, integer number format
+and the backing's endian mode. Format zero selects four DWORDs. Image formats
+use a separate enum interpretation selected by resource kind. The compiler
 retains each load's vector width and requests exactly 4, 8, 12 or 16 bytes in
 `MEGA_FETCH_COUNT` (encoded as bytes minus one). Destination selectors preserve
-only the requested components. Scalar graphics buffer descriptors remain format
+only the requested components. Reflection uses those selectors rather than the
+cache-fetch byte count: a sixteen-byte fetch can discard its fourth component.
+Mixed-width bindings retain the widest selected component. Scalar graphics buffer descriptors remain format
 13. No buffer repacking, additional allocation, publication or waiting is needed.

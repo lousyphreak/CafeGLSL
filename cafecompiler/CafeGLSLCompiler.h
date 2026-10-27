@@ -79,6 +79,12 @@ typedef enum GLSLComputeFormat {
    GLSL_COMPUTE_FORMAT_R32UI = 9,
    GLSL_COMPUTE_FORMAT_RG16F = 10,
    GLSL_COMPUTE_FORMAT_RG32F = 11,
+   /* Buffer read widths use native GX2 data formats. Zero preserves the legacy
+    * four-DWORD descriptor; images retain the format values above. */
+   GLSL_COMPUTE_FORMAT_BUFFER_R32 = 13,
+   GLSL_COMPUTE_FORMAT_BUFFER_RG32 = 29,
+   GLSL_COMPUTE_FORMAT_BUFFER_RGB32 = 47,
+   GLSL_COMPUTE_FORMAT_BUFFER_RGBA32 = 34,
 } GLSLComputeFormat;
 typedef struct GLSLComputeResource {
    uint32_t binding, kind, format, elementBytes;

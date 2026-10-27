@@ -66,8 +66,6 @@ ComputeShader::process_stage_intrinsic(nir_intrinsic_instr *instr)
                                 // Reads carry a compile-time uniform-address flag in component 2.
                                 store ? nir_src_as_uint(instr->src[1]) :
                                 nir_scalar_as_uint(nir_scalar_resolved(instr->src[0].ssa, 2)), nullptr);
-         if (m_last_lds) lds->add_required_instr(m_last_lds);
-         m_last_lds = lds;
          emit_instruction(lds);
          return true;
       }

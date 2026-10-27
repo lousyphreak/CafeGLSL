@@ -399,6 +399,7 @@ private:
       Shader *this_shader{nullptr};
       Instr *last_scratch_instr{nullptr};
       Instr *last_gds_instr{nullptr};
+      std::vector<Instr *> lds_reads;
       Instr *last_ssbo_instr{nullptr};
       Instr *last_kill_instr{nullptr};
       Instr *last_lds_access{nullptr};

@@ -1497,7 +1497,20 @@ Shader::InstructionChain::visit(IfInstr *instr)
 void
 Shader::InstructionChain::visit(GDSInstr *instr)
 {
-   apply(instr, &last_gds_instr);
+   if (this_shader->chip_class() == ISA_CC_R700) {
+      // Reads between writes are independent. A write must wait for every
+      // preceding read before it can overwrite this wave's shared storage.
+      if (last_gds_instr) instr->add_required_instr(last_gds_instr);
+      if (instr->opcode() == DS_OP_WRITE) {
+         for (auto read : lds_reads) instr->add_required_instr(read);
+         lds_reads.clear();
+         last_gds_instr = instr;
+      } else {
+         lds_reads.push_back(instr);
+      }
+   } else {
+      apply(instr, &last_gds_instr);
+   }
    Instr::Flags flag = instr->has_instr_flag(Instr::helper) ? Instr::helper : Instr::vpm;
    for (auto& loop : this_shader->m_loops) {
       loop->set_instr_flag(flag);

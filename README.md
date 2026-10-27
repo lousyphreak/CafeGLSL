@@ -45,9 +45,10 @@ layout table. For each binding 0..15, upload two little-endian `uvec4` values:
 All writable resources use disjoint ranges of one native global export
 allocation. Bind it with `GX2SetShaderExportBuffer`; repeated setter calls cannot
 bind independent allocations simultaneously. Readonly SSBOs use the existing
-DWORD VFETCH descriptors in the vertex texture bank. Compute vector buffer loads
-are split into scalar fetches. Compute runtime-array length queries use the bound
-buffer range's `sizeDwords`, including readonly and size-only bindings.
+DWORD VFETCH descriptors in the vertex texture bank. Compute buffer loads
+preserve one to four aligned 32-bit components per fetch. Runtime-array length
+queries use the bound buffer range's `sizeDwords`, including readonly and
+size-only bindings.
 `imageLoad` uses a readonly sampled texture alias
 at the declared image binding. Publish a prior export and materialize its image
 before binding that alias. Arbitrary read/write sharing within a kernel needs

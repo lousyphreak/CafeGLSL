@@ -57,3 +57,13 @@ binding does not change allocation ownership.
 The R700 ISA's `VTX_WORD2` specifies that instruction endian control is ignored
 when `USE_CONST_FIELDS` is set, enabling the per-resource byte-order selection:
 [AMD R700 ISA](https://www.amd.com/system/files/TechDocs/R700-Family_Instruction_Set_Architecture.pdf).
+
+## Compute vectors
+
+Native compute accepts one to four aligned 32-bit components in a buffer load.
+Bind compute raw-buffer descriptors with `DATA_FORMAT=32_32_32_32` (34), keeping
+`STRIDE=4`, integer number format and the backing's endian mode. The compiler
+retains each load's vector width and requests exactly 4, 8, 12 or 16 bytes in
+`MEGA_FETCH_COUNT` (encoded as bytes minus one). Destination selectors preserve
+only the requested components. Scalar graphics buffer descriptors remain format
+13. No buffer repacking, additional allocation, publication or waiting is needed.

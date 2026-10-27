@@ -1138,7 +1138,6 @@ static void RemapLatteResources(r600_bytecode &bytecode)
             // Their stride, format and byte order come from the bound resource.
             vertex_fetch->buffer_id -= R600_IMAGE_REAL_RESOURCE_OFFSET;
             vertex_fetch->use_const_fields = 1;
-            vertex_fetch->mega_fetch_count = 3;
          }
       }
    }

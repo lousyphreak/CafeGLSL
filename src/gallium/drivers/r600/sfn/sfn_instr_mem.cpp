@@ -669,6 +669,9 @@ RatInstr::emit_ssbo_load(nir_intrinsic_instr *intr, Shader& shader)
       dest, dest_swz[comp_idx], addr_temp, 0, res_id, res_offset, formats[comp_idx]);
    ir->set_fetch_flag(FetchInstr::use_tc);
    ir->set_num_format(vtx_nf_int);
+#if defined(CAFE_COMPILER) || defined(__WUT__)
+   ir->set_mfc(4 * components - 1);
+#endif
 
    shader.emit_instruction(ir);
    return true;

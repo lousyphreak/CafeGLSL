@@ -285,22 +285,10 @@ bool Lower(nir_builder *b, nir_instr *instr, void *data)
             *s.error = "Native compute buffer reads require readonly blocks; in-dispatch export reads need uncached READ_MEM";
             return false;
          }
-         // Existing readonly SSBO scalar lowering uses VFETCH resources.
          if (intr->def.bit_size != 32 || nir_intrinsic_align(intr) < 4) {
             *s.error = "Native buffer reads require DWORD-aligned 32-bit loads"; return false;
          }
-         nir_def *components[4];
-         for (unsigned c = 0; c < intr->def.num_components; ++c) {
-            auto scalar = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
-            scalar->num_components = scalar->def.num_components = 1;
-            scalar->src[0] = nir_src_for_ssa(nir_imm_int(b, slot));
-            scalar->src[1] = nir_src_for_ssa(nir_iadd_imm(b, intr->src[1].ssa, c * 4));
-            nir_intrinsic_set_align(scalar, 4, 0);
-            nir_builder_instr_insert(b, &scalar->instr);
-            components[c] = &scalar->def;
-         }
-         nir_def_rewrite_uses(&intr->def, nir_vec(b, components, intr->def.num_components));
-         nir_instr_remove(instr);
+         nir_src_rewrite(&intr->src[0], nir_imm_int(b, slot));
          return true;
       }
       auto layout = Layout(b, slot, 0);

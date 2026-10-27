@@ -487,6 +487,21 @@ emit_bytecode_fetch(r600_bytecode& bc, const FetchInstr& fetch_instr, bool use_t
 bool
 emit_bytecode_gds(r600_bytecode& bc, const GDSInstr& instr)
 {
+   if (bc.gfx_level == R700) {
+      r600_bytecode_vtx lds = {};
+      const bool store = instr.opcode() == DS_OP_WRITE;
+      lds.op = store ? FETCH_OP_DS_LOCAL_WRITE : FETCH_OP_DS_LOCAL_READ;
+      lds.src_gpr = instr.src().sel();
+      lds.src_sel_x = instr.src()[0]->chan();
+      lds.src_sel_y = instr.src()[1]->chan();
+      lds.dst_gpr = instr.dest_vec().sel();
+      for (unsigned i = 0; i < 4; ++i) {
+         unsigned *sel[] = {&lds.dst_sel_x, &lds.dst_sel_y, &lds.dst_sel_z, &lds.dst_sel_w};
+         *sel[i] = store ? instr.src()[i]->chan() : instr.dest_vec()[i]->chan();
+      }
+      lds.array_base = instr.resource_id();
+      return r600_bytecode_add_vtx_tc(&bc, &lds) == 0;
+   }
    r600_bytecode_gds gds = fill_bytecode_gds(instr, bc.gfx_level);
 
    if (r600_bytecode_add_gds(&bc, &gds)) {

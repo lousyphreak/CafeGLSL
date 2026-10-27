@@ -14,6 +14,89 @@ struct Lowering {
    std::string *error;
 };
 
+// Prove that a store addresses this lane's vec4, with a constant array base.
+// GPU7 LDS cannot write a different lane or a dynamically selected owner slot.
+bool OwnerOffset(nir_scalar s, uint32_t &base, uint32_t &scale)
+{
+   if (nir_scalar_is_const(s)) {
+      base = nir_scalar_as_uint(s); scale = 0; return true;
+   }
+   if (nir_def_instr(s.def)->type == nir_instr_type_intrinsic) {
+      if (nir_scalar_intrinsic_op(s) != nir_intrinsic_load_local_invocation_index)
+         return false;
+      base = 0; scale = 1; return true;
+   }
+   if (nir_def_instr(s.def)->type != nir_instr_type_alu) return false;
+   auto op = nir_scalar_alu_op(s);
+   if (op == nir_op_mov) return OwnerOffset(nir_scalar_chase_alu_src(s, 0), base, scale);
+   if (op != nir_op_iadd && op != nir_op_imul && op != nir_op_ishl) return false;
+   uint32_t a, x, b, y;
+   if (!OwnerOffset(nir_scalar_chase_alu_src(s, 0), a, x) ||
+       !OwnerOffset(nir_scalar_chase_alu_src(s, 1), b, y)) return false;
+   if (op == nir_op_iadd) { base = a+b; scale = x+y; return true; }
+   if (op == nir_op_ishl) {
+      if (y || b >= 32) return false;
+      base = a << b; scale = x << b; return true;
+   }
+   if (x && y) return false;
+   base = a*b; scale = x*b+y*a; return true;
+}
+
+bool LowerLds(nir_builder *b, nir_instr *instr, void *data)
+{
+   auto &error = *static_cast<std::string *>(data);
+   if (!error.empty() || instr->type != nir_instr_type_intrinsic) return false;
+   auto intr = nir_instr_as_intrinsic(instr);
+   bool store = intr->intrinsic == nir_intrinsic_store_shared;
+   if (!store && intr->intrinsic != nir_intrinsic_load_shared) return false;
+   b->cursor = nir_before_instr(instr);
+   unsigned stride = b->shader->info.shared_size / (64*4);
+   if (store) {
+      uint32_t base, scale;
+      if (!OwnerOffset({intr->src[1].ssa, 0}, base, scale) || scale != 16 ||
+          intr->src[0].ssa->bit_size != 32) {
+         error = "GPU7 LDS stores require a constant vec4 array indexed by gl_LocalInvocationIndex";
+         return false;
+      }
+      base += nir_intrinsic_base(intr);
+      if ((base % 1024) >= 16) {
+         error = "GPU7 LDS stores cannot address another lane's storage"; return false;
+      }
+      unsigned component = (base & 15)/4;
+      unsigned mask = nir_intrinsic_write_mask(intr) << component;
+      nir_def *values[4];
+      for (unsigned c = 0; c < 4; ++c)
+         values[c] = mask & (1u << c) ? nir_channel(b, intr->src[0].ssa, c-component) : nir_imm_int(b, 0);
+      auto out = nir_intrinsic_instr_create(b->shader, nir_intrinsic_store_local_shared_r600);
+      out->num_components = 4;
+      out->src[0] = nir_src_for_ssa(nir_vec(b, values, 4));
+      out->src[1] = nir_src_for_ssa(nir_imm_int(b, (base/1024)*4));
+      nir_intrinsic_set_write_mask(out, mask);
+      nir_builder_instr_insert(b, &out->instr);
+   } else {
+      if (intr->def.bit_size != 32) {
+         error = "GPU7 LDS loads require 32-bit components"; return false;
+      }
+      auto address = nir_iadd_imm(b, intr->src[0].ssa, nir_intrinsic_base(intr));
+      auto element = nir_ushr_imm(b, address, 4);
+      auto lane = nir_iand_imm(b, element, 63);
+      auto row = nir_iadd(b, nir_imul_imm(b, nir_ushr_imm(b, lane, 2), stride),
+                         nir_ishl_imm(b, nir_ushr_imm(b, element, 6), 2));
+      auto read = nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_local_shared_r600);
+      read->num_components = 4;
+      read->src[0] = nir_src_for_ssa(nir_vec2(b, nir_iand_imm(b, lane, 3), row));
+      nir_def_init(&read->instr, &read->def, 4, 32);
+      nir_builder_instr_insert(b, &read->instr);
+      auto component = nir_iand_imm(b, nir_ushr_imm(b, address, 2), 3);
+      nir_def *values[4];
+      for (unsigned c = 0; c < intr->def.num_components; ++c)
+         values[c] = nir_vector_extract(b, &read->def, nir_iadd_imm(b, component, c));
+      nir_def_rewrite_uses(&intr->def, nir_vec(b, values, intr->def.num_components));
+   }
+   nir_instr_remove(instr);
+   return true;
+}
+
 // R700 has no float16 conversion ALU opcode. Round IEEE binary32 to
 // binary16 with integer operations, including subnormals, ties, NaNs and Inf.
 nir_def *Half(nir_builder *b, nir_def *f)
@@ -375,10 +458,15 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
    unsigned count = GroupSize(nir);
    // The GLSL linker has already lowered shared variables to explicit IO.
    if (nir->info.shared_size) {
-      error = count > 64 ?
-         "Native GPU7 cannot split logical workgroups using shared LDS across 64-lane waves" :
-         "Native GPU7 shared memory requires owner-write vec4 LDS lowering; this kernel is unsupported";
-      return false;
+      if (count != 64 || nir->info.shared_size > 16384) {
+         error = "GPU7 LDS requires 64 lanes and at most sixteen owner-indexed vec4 arrays[64] (kernel has " +
+                 std::to_string(count) + " lanes, " + std::to_string(nir->info.shared_size) + " shared bytes)";
+         return false;
+      }
+      // Explicit IO excludes the last vec3's tail padding; hardware slots are vec4.
+      nir->info.shared_size = (nir->info.shared_size + 1023) & ~1023u;
+      nir_shader_instructions_pass(nir, LowerLds, nir_metadata_none, &error);
+      if (!error.empty()) return false;
    }
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
       if (var->data.binding == 15) { error = "Compute uniform block 15 is reserved for native resource layouts"; return false; }

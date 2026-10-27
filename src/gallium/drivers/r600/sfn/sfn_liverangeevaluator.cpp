@@ -385,8 +385,9 @@ LiveRangeInstrVisitor::visit(GDSInstr *instr)
    record_read(NO_ALU_BLOCK, instr->src(), LiveRangeEntry::use_unspecified);
    if (instr->resource_offset())
       record_read(NO_ALU_BLOCK, instr->resource_offset(), LiveRangeEntry::use_unspecified);
-   if (instr->dest())
-      record_write(NO_ALU_BLOCK, instr->dest());
+   for (unsigned i = 0; i < 4; ++i)
+      if (instr->dest_vec()[i]->chan() < 4)
+         record_write(NO_ALU_BLOCK, instr->dest_vec()[i]);
 }
 
 void

@@ -111,6 +111,24 @@ void r700_bytecode_alu_read(struct r600_bytecode *bc,
 int r700_bytecode_fetch_mem_build(struct r600_bytecode *bc, struct r600_bytecode_vtx *mem, unsigned id)
 {
 	unsigned opcode = r600_isa_fetch_opcode(bc->isa->hw_class, mem->op) >> 8;
+	if (opcode == 4 || opcode == 5) {
+		const unsigned sels[] = {mem->dst_sel_x, mem->dst_sel_y, mem->dst_sel_z, mem->dst_sel_w};
+		bc->bytecode[id] = 2 | (opcode << 8) | (mem->src_gpr << 11);
+		if (opcode == 4) {
+			for (unsigned i = 0; i < 4; ++i)
+				bc->bytecode[id] |= sels[i] << (20 + i*3);
+			/* Absolute per-SIMD storage; the native descriptor limits LDS kernels
+			 * to one resident wave until relative LDS allocation is established. */
+			bc->bytecode[id+1] = mem->array_base | ((bc->nlds_dw/64) << 16);
+		} else {
+			bc->bytecode[id] |= (mem->src_sel_x << 20) | (mem->src_sel_y << 23);
+			bc->bytecode[id+1] = mem->dst_gpr | (1u << 17); /* arbitrary-bank WATERFALL */
+			for (unsigned i = 0; i < 4; ++i)
+				if (sels[i] < 4) bc->bytecode[id+1] |= 1u << (9 + sels[i]);
+		}
+		bc->bytecode[id+2] = bc->bytecode[id+3] = 0;
+		return 0;
+	}
 
 	bc->bytecode[id++] = S_SQ_MEM_RD_WORD0_MEM_INST(2) |
 		S_SQ_MEM_RD_WORD0_ELEM_SIZE(mem->elem_size) |

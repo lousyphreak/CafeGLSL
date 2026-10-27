@@ -8,6 +8,7 @@
 
 #include "sfn_instr_fetch.h"
 #include "sfn_instr_export.h"
+#include "sfn_instr_mem.h"
 
 namespace r600 {
 
@@ -50,6 +51,24 @@ ComputeShader::process_stage_intrinsic(nir_intrinsic_instr *instr)
 {
    if (chip_class() == ISA_CC_R700) {
       auto &vf = value_factory();
+      if (instr->intrinsic == nir_intrinsic_load_local_shared_r600 ||
+          instr->intrinsic == nir_intrinsic_store_local_shared_r600) {
+         const bool store = instr->intrinsic == nir_intrinsic_store_local_shared_r600;
+         const unsigned mask = store ? nir_intrinsic_write_mask(instr) : 3;
+         RegisterVec4::Swizzle swz = {7, 7, 7, 7};
+         for (unsigned i = 0; i < 4; ++i) if (mask & (1u << i)) swz[i] = i;
+         auto src = vf.temp_vec4(pin_group, swz);
+         for (unsigned i = 0; i < 4; ++i)
+            if (mask & (1u << i))
+               emit_instruction(new AluInstr(op1_mov, src[i], vf.src(instr->src[0], i), AluInstr::write));
+         auto dest = store ? RegisterVec4(0, false, {7,7,7,7}, pin_none) : vf.dest_vec4(instr->def, pin_group);
+         auto lds = new GDSInstr(store ? DS_OP_WRITE : DS_OP_READ_RET, dest, src,
+                                store ? nir_src_as_uint(instr->src[1]) : 0, nullptr);
+         if (m_last_lds) lds->add_required_instr(m_last_lds);
+         m_last_lds = lds;
+         emit_instruction(lds);
+         return true;
+      }
       if (instr->intrinsic == nir_intrinsic_load_num_workgroups)
          return emit_load_from_info_buffer(instr, 0);
       if (instr->intrinsic == nir_intrinsic_load_vertex_id) {

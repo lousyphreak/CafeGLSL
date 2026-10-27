@@ -44,6 +44,7 @@ private:
 
    PRegister m_zero_register{0};
    int m_image_size_const_offset{0};
+   Instr *m_last_lds{nullptr};
 };
 
 } // namespace r600

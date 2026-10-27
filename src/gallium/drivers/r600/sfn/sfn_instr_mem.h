@@ -18,6 +18,8 @@ class GDSInstr : public Instr, public Resource {
 public:
    GDSInstr(
       ESDOp op, Register *dest, const RegisterVec4& src, int uav_base, PRegister uav_id);
+   GDSInstr(ESDOp op, const RegisterVec4& dest, const RegisterVec4& src,
+            int uav_base, PRegister uav_id);
 
    bool is_equal_to(const GDSInstr& lhs) const;
 
@@ -30,8 +32,8 @@ public:
    auto& src() { return m_src; }
    auto& src() const { return m_src; }
 
-   const auto& dest() const { return m_dest; }
-   auto& dest() { return m_dest; }
+   Register *dest() const { return m_dest[0]->chan() < 4 ? m_dest[0] : nullptr; }
+   const RegisterVec4& dest_vec() const { return m_dest; }
 
    static auto from_string(std::istream& is, ValueFactory& value_factory) -> Pointer;
 
@@ -52,7 +54,7 @@ private:
    void do_print(std::ostream& os) const override;
 
    ESDOp m_op{DS_OP_INVALID};
-   Register *m_dest;
+   RegisterVec4 m_dest;
 
    RegisterVec4 m_src;
 

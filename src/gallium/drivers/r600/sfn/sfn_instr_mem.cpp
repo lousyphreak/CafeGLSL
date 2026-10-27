@@ -19,6 +19,13 @@ namespace r600 {
 
 GDSInstr::GDSInstr(
    ESDOp op, Register *dest, const RegisterVec4& src, int uav_base, PRegister uav_id):
+    GDSInstr(op, RegisterVec4(dest, nullptr, nullptr, nullptr, pin_none), src,
+             uav_base, uav_id)
+{
+}
+
+GDSInstr::GDSInstr(ESDOp op, const RegisterVec4& dest, const RegisterVec4& src,
+                   int uav_base, PRegister uav_id):
     Resource(this, uav_base, uav_id),
     m_op(op),
     m_dest(dest),
@@ -27,8 +34,8 @@ GDSInstr::GDSInstr(
    set_always_keep();
 
    m_src.add_use(this);
-   if (m_dest)
-      m_dest->add_parent(this);
+   for (unsigned i = 0; i < 4; ++i)
+      if (m_dest[i]->chan() < 4) m_dest[i]->add_parent(this);
 }
 
 bool
@@ -39,7 +46,7 @@ GDSInstr::is_equal_to(const GDSInstr& rhs) const
    if (NE(m_op) || NE(m_src))
       return false;
 
-   sfn_value_equal(m_dest, rhs.m_dest);
+   if (m_dest != rhs.m_dest) return false;
 
    return resource_is_equal(rhs);
 }
@@ -59,6 +66,8 @@ GDSInstr::accept(InstrVisitor& visitor)
 bool
 GDSInstr::do_ready() const
 {
+   for (auto instruction : required_instr())
+      if (!instruction->is_scheduled()) return false;
    return m_src.ready(block_id(), index()) && resource_ready(block_id(), index());
 }
 
@@ -66,8 +75,8 @@ void
 GDSInstr::do_print(std::ostream& os) const
 {
    os << "GDS " << lds_ops.at(m_op).name;
-   if (m_dest)
-      os << *m_dest;
+   if (dest())
+      os << m_dest;
    else
       os << "___";
    os << " " << m_src;

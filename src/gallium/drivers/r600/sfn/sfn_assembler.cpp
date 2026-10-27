@@ -546,7 +546,7 @@ AssemblerVisitor::visit(const ControlFlowInstr& instr)
       emit_alu_push_before();
       break;
    case ControlFlowInstr::cf_gds:
-      r600_bytecode_add_cfinst(&m_bc, CF_OP_GDS);
+      r600_bytecode_add_cfinst(&m_bc, m_bc.gfx_level == R700 ? CF_OP_TEX : CF_OP_GDS);
       break;
    case ControlFlowInstr::cf_tex:
       r600_bytecode_add_cfinst(&m_bc, CF_OP_TEX);
@@ -565,7 +565,7 @@ AssemblerVisitor::visit(const GDSInstr& instr)
    if (!(m_result &= emit_bytecode_gds(m_bc, instr)))
       return;
 
-   m_bc.cf_last->vpm = MESA_SHADER_FRAGMENT == m_bc.type;
+   m_bc.cf_last->vpm = m_bc.gfx_level == R700 || MESA_SHADER_FRAGMENT == m_bc.type;
    m_bc.cf_last->barrier = 1;
 }
 

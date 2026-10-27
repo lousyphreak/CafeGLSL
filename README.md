@@ -9,7 +9,7 @@ By default, Wii U offers no way to compile shaders dynamically during runtime, y
 ## Current limitations
 
 - No support for geometry or tessellation shaders.
-- Native compute maps independent logical workgroups onto 64-lane hardware waves. Shared LDS lowering, global atomics and in-dispatch export reads are unsupported; oversized groups containing barriers or subgroup communication cannot be split.
+- Native compute maps independent logical workgroups onto 64-lane hardware waves. Native owner-write LDS supports 64-lane groups and up to 16 KiB of shared vec4 slots, including padded vec3 and partial component stores. Global atomics and in-dispatch export reads remain unsupported; oversized groups containing shared memory, barriers or subgroup communication cannot be split.
 - Graphics read-only storage buffers support scalar, aligned 32-bit loads with static bindings. See the [native buffer binding and byte-order ABI](cafecompiler/readonly-buffers.md); writes, atomics, and runtime length queries are unsupported.
 - Wii U limitation: GX2 uses one uniform mode for both the vertex and pixel shader in each draw. You must select that mode before drawing. See [Important: choose loose uniforms or uniform blocks](#important-choose-loose-uniforms-or-uniform-blocks) below.
 
@@ -109,11 +109,32 @@ explicit-LOD and four-offset gathers are diagnosed as unsupported.
 14/15 with the 0x84-byte target descriptor and the existing relocation format.
 WUT's graphics GFD loader does not load these blocks; consumers must implement a
 compute loader. Preserve the complete register image stored in the descriptor.
-`over64Mode` and `wavesPerSimd` remain zero.
+`over64Mode` remains zero. LDS kernels set `wavesPerSimd=1`; other kernels leave it zero.
 `GX2SetComputeShader` also installs each reflected loop constant in the shared
 vertex/compute loop bank. CafeGLSL supplies `{offset=0, value=0x01000fff}`; preserve
 that reflection when loading GFD. No duplicate raw loop programming is needed;
 the native setter does not invent this default for a shader with no loop entries.
+
+### Native local data share
+
+GPU7 has 16 KiB of LDS per SIMD, with owner-only writes and arbitrary-lane
+reads. Shared arrays have 64 vec4-aligned entries; each lane writes its own
+`gl_LocalInvocationIndex` entry at a constant array slot. Up to sixteen such
+slots fit. vec3 entries use vec4 padding, uint/int/float preserve their raw
+32-bit values, and component stores preserve unwritten components. Scalar or
+vec2 arrays with a smaller stride and writes to another lane are diagnosed;
+this is not unrestricted modern GLSL shared memory.
+
+The compiler emits R700 `DS_LOCAL_WRITE` / `DS_LOCAL_READ` inside TEX clauses,
+keeps LDS operations ordered, and uses WATERFALL for arbitrary bank reads.
+Shared-only barriers need no CPU operation within the lockstep 64-lane wave.
+Absolute LDS addressing plus `wavesPerSimd=1` keeps separate workgroups private,
+including exchanges spanning multiple clauses. This is a conservative residency
+limit; relative LDS allocation with more resident waves remains future work.
+No new renderer flush, allocation, copy, or CPU/GPU wait is required.
+
+See the [AMD R700 ISA](https://www.amd.com/system/files/TechDocs/R700-Family_Instruction_Set_Architecture.pdf),
+sections 2.6.2, 8 and 10.6, for native LDS instruction constraints.
 
 Compilation does not publish GPU caches. On Wii U, publish code with CPU_SHADER,
 uniform/layout data with CPU|UNIFORM_BLOCK, and dispatch parameters with CPU

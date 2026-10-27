@@ -125,15 +125,31 @@ bool ForwardReadonlyShared(nir_shader *shader)
    for (auto node = store->instr.block->cf_node.parent; node; node = node->parent)
       if (node->type == nir_cf_node_loop) { loop = nir_cf_node_as_loop(node); break; }
    if (!loop || nir_loop_is_divergent(loop) || !InsideLoop(source->instr.block, loop)) return false;
-   nir_foreach_block_in_cf_node(block, &loop->cf_node) nir_foreach_instr(instr, block) {
-      if (instr->type == nir_instr_type_call) return false;
-      if (instr->type != nir_instr_type_intrinsic) continue;
-      auto intr = nir_instr_as_intrinsic(instr);
-      if (intr == store) continue;
-      if (intr->intrinsic == nir_intrinsic_barrier) {
-         if (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared) return false;
-      } else if (!(nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_CAN_ELIMINATE)) return false;
+   unsigned arithmetic = 0;
+   bool all_divergent = true;
+   for (auto read : reads) all_divergent &= nir_src_is_divergent(&read->src[0]);
+   nir_foreach_block_in_cf_node(block, &loop->cf_node) {
+      bool consumes = false;
+      for (auto read : reads) consumes |= read->instr.block == block;
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_alu && consumes) {
+            auto alu = nir_instr_as_alu(instr);
+            if (nir_alu_type_get_base_type(nir_op_infos[alu->op].output_type) == nir_type_float &&
+                alu->op != nir_op_fneg && alu->op != nir_op_fabs && alu->op != nir_op_fsat)
+               arithmetic += alu->def.num_components;
+         }
+         if (instr->type == nir_instr_type_call) return false;
+         if (instr->type != nir_instr_type_intrinsic) continue;
+         auto intr = nir_instr_as_intrinsic(instr);
+         if (intr == store) continue;
+         if (intr->intrinsic == nir_intrinsic_barrier) {
+            if (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared) return false;
+         } else if (!(nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_CAN_ELIMINATE)) return false;
+      }
    }
+   // Uniform, low-arithmetic reads benefit from their LDS cache. Divergent
+   // reads already pay WATERFALL; otherwise require work to hide texture latency.
+   if (!all_divergent && arithmetic < 4*n*reads.size()) return false;
    nir_metadata_require(impl, nir_metadata_dominance);
    for (auto read : reads) {
       if (!InsideLoop(read->instr.block, loop) || read->def.num_components != n ||

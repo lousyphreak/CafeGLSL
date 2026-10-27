@@ -84,14 +84,20 @@ bool LowerLds(nir_builder *b, nir_instr *instr, void *data)
                          nir_ishl_imm(b, nir_ushr_imm(b, element, 6), 2));
       auto read = nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_local_shared_r600);
       read->num_components = 4;
-      read->src[0] = nir_src_for_ssa(nir_vec2(b, nir_iand_imm(b, lane, 3), row));
+      // Equal addresses cannot conflict, even when they select the same bank.
+      bool uniform = !nir_src_is_divergent(&intr->src[0]);
+      read->src[0] = nir_src_for_ssa(nir_vec3(b, nir_iand_imm(b, lane, 3), row, nir_imm_int(b, uniform)));
       nir_def_init(&read->instr, &read->def, 4, 32);
       nir_builder_instr_insert(b, &read->instr);
       auto component = nir_iand_imm(b, nir_ushr_imm(b, address, 2), 3);
       nir_def *values[4];
       for (unsigned c = 0; c < intr->def.num_components; ++c)
          values[c] = nir_vector_extract(b, &read->def, nir_iadd_imm(b, component, c));
-      nir_def_rewrite_uses(&intr->def, nir_vec(b, values, intr->def.num_components));
+      // Later LDS accesses may use this replacement as an address. Preserve
+      // conservative divergence until the lowering pass has finished.
+      auto result = nir_vec(b, values, intr->def.num_components);
+      result->divergent = true;
+      nir_def_rewrite_uses(&intr->def, result);
    }
    nir_instr_remove(instr);
    return true;
@@ -465,6 +471,7 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
       }
       // Explicit IO excludes the last vec3's tail padding; hardware slots are vec4.
       nir->info.shared_size = (nir->info.shared_size + 1023) & ~1023u;
+      nir_divergence_analysis(nir);
       nir_shader_instructions_pass(nir, LowerLds, nir_metadata_none, &error);
       if (!error.empty()) return false;
    }

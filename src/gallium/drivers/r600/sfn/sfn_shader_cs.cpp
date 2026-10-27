@@ -63,7 +63,9 @@ ComputeShader::process_stage_intrinsic(nir_intrinsic_instr *instr)
                emit_instruction(new AluInstr(op1_mov, src[i], vf.src(instr->src[0], i), AluInstr::write));
          auto dest = store ? RegisterVec4(0, false, {7,7,7,7}, pin_none) : vf.dest_vec4(instr->def, pin_group);
          auto lds = new GDSInstr(store ? DS_OP_WRITE : DS_OP_READ_RET, dest, src,
-                                store ? nir_src_as_uint(instr->src[1]) : 0, nullptr);
+                                // Reads carry a compile-time uniform-address flag in component 2.
+                                store ? nir_src_as_uint(instr->src[1]) :
+                                nir_scalar_as_uint(nir_scalar_resolved(instr->src[0].ssa, 2)), nullptr);
          if (m_last_lds) lds->add_required_instr(m_last_lds);
          m_last_lds = lds;
          emit_instruction(lds);

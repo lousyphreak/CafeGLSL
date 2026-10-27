@@ -122,7 +122,7 @@ int r700_bytecode_fetch_mem_build(struct r600_bytecode *bc, struct r600_bytecode
 			bc->bytecode[id+1] = mem->array_base | ((bc->nlds_dw/64) << 16);
 		} else {
 			bc->bytecode[id] |= (mem->src_sel_x << 20) | (mem->src_sel_y << 23);
-			bc->bytecode[id+1] = mem->dst_gpr | (1u << 17); /* arbitrary-bank WATERFALL */
+			bc->bytecode[id+1] = mem->dst_gpr | (mem->array_base ? 0 : 1u << 17); /* nonuniform addresses need WATERFALL */
 			for (unsigned i = 0; i < 4; ++i)
 				if (sels[i] < 4) bc->bytecode[id+1] |= 1u << (9 + sels[i]);
 		}

@@ -127,6 +127,8 @@ this is not unrestricted modern GLSL shared memory.
 
 The compiler emits R700 `DS_LOCAL_WRITE` / `DS_LOCAL_READ` inside TEX clauses,
 keeps LDS operations ordered, and uses WATERFALL for arbitrary bank reads.
+NIR divergence analysis proves uniform-address reads safe without WATERFALL;
+unknown or lane-dependent addresses retain the conservative mode.
 Shared-only barriers need no CPU operation within the lockstep 64-lane wave.
 Absolute LDS addressing plus `wavesPerSimd=1` keeps separate workgroups private,
 including exchanges spanning multiple clauses. This is a conservative residency

@@ -100,9 +100,11 @@ static void InitializeR600NirOptions(nir_shader_compiler_options &options)
    r600_init_nir_options(&options, R700, CHIP_RV730);
 
    /* Upstream turns non-block uniforms into a UBO; we decide per shader instead (see
-    * PrepareNir). The only field we differ from the driver's table on.
+    * PrepareNir).
     */
    options.lower_uniforms_to_ubo = false;
+   // Bound code expansion and register pressure across all shader stages.
+   options.max_unroll_iterations = 64;
 }
 
 static int LookupParameterIndex(gl_program *program, nir_variable *variable)

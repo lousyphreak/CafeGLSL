@@ -878,7 +878,8 @@ public:
    void visit(StreamOutInstr *instr) override;
    void visit(MemRingOutInstr *instr) override;
    void visit(EmitVertexInstr *instr) override { (void)instr; }
-   void visit(GDSInstr *instr) override { (void)instr; };
+   // LDS/GDS source selectors encode zero/one directly, just like TEX sources.
+   void visit(GDSInstr *instr) override { replace_src(instr, instr->src()); }
    void visit(WriteTFInstr *instr) override { (void)instr; };
    void visit(LDSAtomicInstr *instr) override { (void)instr; };
    void visit(LDSReadInstr *instr) override { (void)instr; };

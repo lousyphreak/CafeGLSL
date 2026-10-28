@@ -106,7 +106,7 @@ static void InitializeR600NirOptions(nir_shader_compiler_options &options)
     */
    options.lower_uniforms_to_ubo = false;
    // Bound code expansion and register pressure across all shader stages.
-   options.max_unroll_iterations = 64;
+   options.max_unroll_iterations = kGpu7BaseUnroll;
 }
 
 static int LookupParameterIndex(gl_program *program, nir_variable *variable)
@@ -1597,11 +1597,13 @@ CafeCompiler::CompileState &CafeCompiler::SelectUnrolling(const char *source,
    CompileState &baseline, CompileState &candidate)
 {
    const Gpu7Cost cost = Gpu7Measure(baseline.nir);
-   if (!cost.boundedLoop)
+   // Per-loop limits alone allow a large shader to expand dozens of loops.
+   // Bound the total estimated expansion before recompiling the frontend.
+   if (!cost.unrollCost || cost.unrollCost > kGpu7ExpandedUnroll * kGpu7UnrollCostPerIteration)
       return baseline;
    const double baselineCost = Gpu7Estimate(cost, baseline.nir,
                                            baseline.pipe_shader.shader.bc.ngpr);
-   m_nir_options->max_unroll_iterations = 255;
+   m_nir_options->max_unroll_iterations = kGpu7ExpandedUnroll;
    const GLenum type = baseline.stage == MESA_SHADER_VERTEX ? GL_VERTEX_SHADER :
                        baseline.stage == MESA_SHADER_FRAGMENT ? GL_FRAGMENT_SHADER : GL_COMPUTE_SHADER;
    std::string diagnostics;
@@ -1609,7 +1611,7 @@ CafeCompiler::CompileState &CafeCompiler::SelectUnrolling(const char *source,
    candidate.key = baseline.key;
    const bool compiled = CompileFrontend(source, type, candidate, diagnostics) &&
                          PrepareNir(candidate, diagnostics) && CompileR600(candidate, diagnostics);
-   m_nir_options->max_unroll_iterations = 64;
+   m_nir_options->max_unroll_iterations = kGpu7BaseUnroll;
    if (compiled && Gpu7Estimate(Gpu7Measure(candidate.nir), candidate.nir,
                                candidate.pipe_shader.shader.bc.ngpr) < 0.95 * baselineCost)
       return candidate;

@@ -3,9 +3,13 @@
 // Coarse relative issue estimates for ranking unroll candidates. Four vector
 // lanes share an ALU issue; scalar special functions occupy a full issue. Fetch
 // weights approximate latency rather than predicting wall-clock cycles.
+constexpr unsigned kGpu7BaseUnroll = 64;
+constexpr unsigned kGpu7ExpandedUnroll = 255;
+constexpr unsigned kGpu7UnrollCostPerIteration = 26; // NIR LOOP_UNROLL_LIMIT.
+
 struct Gpu7Cost {
    double alu = 0, texture = 0, buffer = 0;
-   bool boundedLoop = false;
+   unsigned unrollCost = 0;
 };
 
 static Gpu7Cost Gpu7Count(const exec_list &list)
@@ -44,7 +48,7 @@ static Gpu7Cost Gpu7Count(const exec_list &list)
          cost.alu += std::max(a.alu, b.alu);
          cost.texture += std::max(a.texture, b.texture);
          cost.buffer += std::max(a.buffer, b.buffer);
-         cost.boundedLoop |= a.boundedLoop || b.boundedLoop;
+         cost.unrollCost += a.unrollCost + b.unrollCost;
       } else if (node->type == nir_cf_node_loop) {
          auto loop = nir_cf_node_as_loop(node);
          auto body = Gpu7Count(loop->body);
@@ -52,8 +56,15 @@ static Gpu7Cost Gpu7Count(const exec_list &list)
          cost.alu += count * body.alu;
          cost.texture += count * body.texture;
          cost.buffer += count * body.buffer;
-         cost.boundedLoop |= body.boundedLoop ||
-            (count > 1 && count <= 255 && loop->control != nir_loop_control_dont_unroll);
+         // Match NIR's 26-instruction cost budget per permitted iteration. A
+         // loop already within the base limits remains for a structural reason;
+         // increasing the limits cannot help it.
+         const unsigned expanded = loop->info->instr_cost * count;
+         const bool expandable = count > 1 && count <= kGpu7ExpandedUnroll &&
+            (count > kGpu7BaseUnroll || expanded > kGpu7BaseUnroll * kGpu7UnrollCostPerIteration) &&
+            expanded <= kGpu7ExpandedUnroll * kGpu7UnrollCostPerIteration &&
+            loop->control != nir_loop_control_dont_unroll;
+         cost.unrollCost += body.unrollCost + (expandable ? expanded : 0);
       }
    }
    return cost;

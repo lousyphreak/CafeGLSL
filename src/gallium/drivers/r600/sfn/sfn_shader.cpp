@@ -493,6 +493,8 @@ void
 Shader::set_info(nir_shader *nir)
 {
 #if defined(CAFE_COMPILER) || defined(__WUT__)
+   if (m_chip_class == ISA_CC_R700 && nir->info.stage == MESA_SHADER_COMPUTE)
+      set_flag(sh_early_tex);
    // Local LDS intrinsics with no private reservation describe a proven owner
    // cache whose contents must be restored in each non-interruptible clause.
    if (m_chip_class == ISA_CC_R700 && nir->info.stage == MESA_SHADER_COMPUTE &&
@@ -622,6 +624,12 @@ Shader::scan_uniforms(nir_variable *uniform)
 bool
 Shader::scan_instruction(nir_instr *instr)
 {
+   // Keep the existing batching policy for raw texel-load kernels.
+   if (instr->type == nir_instr_type_tex) {
+      auto op = nir_instr_as_tex(instr)->op;
+      if (op == nir_texop_txf || op == nir_texop_txf_ms)
+         m_flags.reset(sh_early_tex);
+   }
    if (do_scan_instruction(instr))
       return true;
 

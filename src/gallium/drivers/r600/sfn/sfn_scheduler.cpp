@@ -281,6 +281,7 @@ private:
    GDSInstr *m_lds_owner_write{nullptr};
    int m_alu_groups_scheduled{0};
    r600_chip_class m_chip_class;
+   unsigned m_tex_ready_limit;
    bool m_idx0_loading{false};
    bool m_idx1_loading{false};
    bool m_idx0_pending{false};
@@ -336,7 +337,8 @@ BlockScheduler::BlockScheduler(r600_chip_class chip_class,
    m_last_pixel(nullptr),
    m_last_param(nullptr),
    m_current_block(nullptr),
-   m_chip_class(chip_class)
+   m_chip_class(chip_class),
+   m_tex_ready_limit(chip_class >= ISA_CC_EVERGREEN ? 15 : 7)
 {
    m_nop_after_rel_dest = chip_family == CHIP_RV770;
 
@@ -351,6 +353,9 @@ BlockScheduler::run(Shader *shader)
 {
    Shader::ShaderBlocks scheduled_blocks;
    m_vf = &shader->value_factory();
+   // Prefer sampled compute reads before retaining a large ready queue.
+   if (shader->has_flag(Shader::sh_early_tex))
+      m_tex_ready_limit = 1;
    m_replay_lds = shader->has_flag(Shader::sh_lds_clause_replay);
 
    for (auto& block : shader->func()) {
@@ -459,7 +464,7 @@ BlockScheduler::maybe_select_tex_or_free_scheduler(SchedulerState& current_sched
        m_current_block->expected_ar_uses() == 0) {
       if (last_scheduler != sched_free && free_ready.size() >= 4)
          current_scheduler = sched_free;
-      else if (tex_ready.size() > (m_chip_class >= ISA_CC_EVERGREEN ? 15 : 7))
+      else if (tex_ready.size() > m_tex_ready_limit)
          current_scheduler = sched_tex;
    }
 }

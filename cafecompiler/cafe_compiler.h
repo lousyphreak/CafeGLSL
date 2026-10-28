@@ -50,6 +50,7 @@ private:
                    CompileState *second, std::string &diagnostics);
    bool PrepareNir(CompileState &state, std::string &diagnostics);
    bool CompileR600(CompileState &state, std::string &diagnostics);
+   CompileState &SelectUnrolling(const char *source, CompileState &baseline, CompileState &candidate);
    GX2VertexShader *CreateVertexShader(CompileState &state,
                                        std::string &diagnostics,
                                        GLSL_COMPILER_FLAG flags);

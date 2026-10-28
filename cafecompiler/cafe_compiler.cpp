@@ -47,6 +47,8 @@
 #include <utility>
 #include <vector>
 
+#include "gpu7_cost.h"
+
 constexpr unsigned kMaxUniformBlocks = 16;
 constexpr unsigned kMaxAluConstComponents = 1024;
 constexpr unsigned kMaxSamplers = 18;
@@ -1589,15 +1591,41 @@ bool CafeCompiler::CompileR600(CompileState &state, std::string &diagnostics)
    return true;
 }
 
+// Try at most one larger expansion, and keep the conservative compile when the
+// estimated gain is within the model's 5% profitability margin. No runtime variant.
+CafeCompiler::CompileState &CafeCompiler::SelectUnrolling(const char *source,
+   CompileState &baseline, CompileState &candidate)
+{
+   const Gpu7Cost cost = Gpu7Measure(baseline.nir);
+   if (!cost.boundedLoop)
+      return baseline;
+   const double baselineCost = Gpu7Estimate(cost, baseline.nir,
+                                           baseline.pipe_shader.shader.bc.ngpr);
+   m_nir_options->max_unroll_iterations = 255;
+   const GLenum type = baseline.stage == MESA_SHADER_VERTEX ? GL_VERTEX_SHADER :
+                       baseline.stage == MESA_SHADER_FRAGMENT ? GL_FRAGMENT_SHADER : GL_COMPUTE_SHADER;
+   std::string diagnostics;
+   candidate.mode = baseline.mode;
+   candidate.key = baseline.key;
+   const bool compiled = CompileFrontend(source, type, candidate, diagnostics) &&
+                         PrepareNir(candidate, diagnostics) && CompileR600(candidate, diagnostics);
+   m_nir_options->max_unroll_iterations = 64;
+   if (compiled && Gpu7Estimate(Gpu7Measure(candidate.nir), candidate.nir,
+                               candidate.pipe_shader.shader.bc.ngpr) < 0.95 * baselineCost)
+      return candidate;
+   return baseline;
+}
+
 GX2ShaderMode CafeCompiler::CompileComputeShader(const char *source, GLSLComputeShader *&shader_output,
                                                 std::string &diagnostics, GLSL_COMPILER_FLAG flags)
 {
-   CompileState state;
-   if (!CompileFrontend(source, GL_COMPUTE_SHADER, state, diagnostics))
+   CompileState baseline, candidate;
+   if (!CompileFrontend(source, GL_COMPUTE_SHADER, baseline, diagnostics))
       return GLSL_SHADER_MODE_ERROR;
-   state.mode = GX2_SHADER_MODE_UNIFORM_BLOCK;
-   if (!PrepareNir(state, diagnostics) || !CompileR600(state, diagnostics))
+   baseline.mode = GX2_SHADER_MODE_UNIFORM_BLOCK;
+   if (!PrepareNir(baseline, diagnostics) || !CompileR600(baseline, diagnostics))
       return GLSL_SHADER_MODE_ERROR;
+   CompileState &state = SelectUnrolling(source, baseline, candidate);
    std::unique_ptr<GLSLComputeShader, decltype(&FreeComputeShader)> output(
       static_cast<GLSLComputeShader *>(calloc(1, sizeof(GLSLComputeShader))), FreeComputeShader);
    if (!output) { diagnostics = "Out of memory allocating compute shader"; return GLSL_SHADER_MODE_ERROR; }
@@ -1630,12 +1658,13 @@ GX2ShaderMode CafeCompiler::CompileVertexShader(const char *source, GLSLCompileM
                                                       GX2VertexShader *&shader_output, std::string &diagnostics,
                                                       GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
 {
-   CompileState state;
-   state.key.vs.as_gs_a = 0 != (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
-   if (!CompileFrontend(source, GL_VERTEX_SHADER, state, diagnostics) ||
-       !SelectMode(requested_mode, state, nullptr, diagnostics) ||
-       !PrepareNir(state, diagnostics) || !CompileR600(state, diagnostics))
+   CompileState baseline, candidate;
+   baseline.key.vs.as_gs_a = 0 != (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
+   if (!CompileFrontend(source, GL_VERTEX_SHADER, baseline, diagnostics) ||
+       !SelectMode(requested_mode, baseline, nullptr, diagnostics) ||
+       !PrepareNir(baseline, diagnostics) || !CompileR600(baseline, diagnostics))
       return GLSL_SHADER_MODE_ERROR;
+   CompileState &state = SelectUnrolling(source, baseline, candidate);
 
    GX2VertexShader *shader = CreateVertexShader(state, diagnostics, flags);
    if (!shader)
@@ -1675,11 +1704,12 @@ GX2ShaderMode CafeCompiler::CompilePixelShader(const char *source, GLSLCompileMo
                                                      GX2PixelShader *&shader_output, std::string &diagnostics,
                                                      GLSL_COMPILER_FLAG flags, GLSLShaderResources *resources)
 {
-   CompileState state;
-   if (!CompileFrontend(source, GL_FRAGMENT_SHADER, state, diagnostics) ||
-       !SelectMode(requested_mode, state, nullptr, diagnostics) ||
-       !PrepareNir(state, diagnostics) || !CompileR600(state, diagnostics))
+   CompileState baseline, candidate;
+   if (!CompileFrontend(source, GL_FRAGMENT_SHADER, baseline, diagnostics) ||
+       !SelectMode(requested_mode, baseline, nullptr, diagnostics) ||
+       !PrepareNir(baseline, diagnostics) || !CompileR600(baseline, diagnostics))
       return GLSL_SHADER_MODE_ERROR;
+   CompileState &state = SelectUnrolling(source, baseline, candidate);
 
    GX2PixelShader *shader = CreatePixelShader(state, diagnostics, flags);
    if (!shader)
@@ -1722,7 +1752,7 @@ GX2ShaderMode CafeCompiler::CompileShaderPair(const char *vertex_source, const c
                                                     GX2PixelShader *&pixel_output,
                                                     std::string &diagnostics, GLSL_COMPILER_FLAG flags)
 {
-   CompileState vertex_state, pixel_state;
+   CompileState vertex_state, pixel_state, vertex_candidate, pixel_candidate;
    if (!CompileFrontend(vertex_source, GL_VERTEX_SHADER, vertex_state, diagnostics)) {
       diagnostics = "Vertex shader: " + diagnostics;
       return GLSL_SHADER_MODE_ERROR;
@@ -1740,23 +1770,27 @@ GX2ShaderMode CafeCompiler::CompileShaderPair(const char *vertex_source, const c
    const bool warn_pixel = requested_mode == GLSL_COMPILE_AUTO &&
       pixel_state.uses_loose_uniforms && !pixel_state.NeedsUniformBlockMode() &&
       vertex_state.NeedsUniformBlockMode();
-   for (CompileState *state : {&pixel_state, &vertex_state}) {
+   CompileState *selected[] = {&pixel_state, &vertex_state};
+   for (unsigned i = 0; i < 2; ++i) {
+      CompileState *state = selected[i];
       if (state == &vertex_state)
-         state->key.vs.as_gs_a = pixel_state.pipe_shader.shader.gs_prim_id_input ||
+         state->key.vs.as_gs_a = selected[0]->pipe_shader.shader.gs_prim_id_input ||
             (flags & GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
       if (!PrepareNir(*state, diagnostics) || !CompileR600(*state, diagnostics)) {
          diagnostics = (state == &vertex_state ? "Vertex shader: " : "Pixel shader: ") +
                        diagnostics;
          return GLSL_SHADER_MODE_ERROR;
       }
+      selected[i] = &SelectUnrolling(i ? vertex_source : pixel_source, *state,
+                                     i ? vertex_candidate : pixel_candidate);
    }
 
    std::unique_ptr<GX2VertexShader, decltype(&FreeVertexShader)> vertex(
-      CreateVertexShader(vertex_state, diagnostics, flags), FreeVertexShader);
+      CreateVertexShader(*selected[1], diagnostics, flags), FreeVertexShader);
    if (!vertex)
       return GLSL_SHADER_MODE_ERROR;
    std::unique_ptr<GX2PixelShader, decltype(&FreePixelShader)> pixel(
-      CreatePixelShader(pixel_state, diagnostics, flags), FreePixelShader);
+      CreatePixelShader(*selected[0], diagnostics, flags), FreePixelShader);
    if (!pixel)
       return GLSL_SHADER_MODE_ERROR;
 

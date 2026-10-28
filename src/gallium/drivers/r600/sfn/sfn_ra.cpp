@@ -9,6 +9,7 @@
 #include "sfn_alu_defines.h"
 #include "sfn_debug.h"
 
+#include <algorithm>
 #include <cassert>
 #include <queue>
 
@@ -323,6 +324,26 @@ scalar_clause_local_allocation (LiveRangeMap& lrm, const Interference&  interfer
    }
 }
 
+static bool
+allocate_registers(LiveRangeMap& lrm, const Interference& interference, GroupRegisters& groups)
+{
+   if (!group_allocation(lrm, interference, groups))
+      return false;
+   scalar_clause_local_allocation(lrm, interference);
+   return scalar_allocation(lrm, interference);
+}
+
+static int
+register_count(const LiveRangeMap& lrm)
+{
+   int count = 0;
+   for (int c = 0; c < 4; ++c)
+      for (const auto& entry : lrm.component(c))
+         if (entry.m_color < g_clause_local_start)
+            count = std::max(count, entry.m_color + 1);
+   return count;
+}
+
 bool
 register_allocation(LiveRangeMap& lrm)
 {
@@ -376,16 +397,29 @@ register_allocation(LiveRangeMap& lrm)
       }
    }
 
-   GroupRegisters groups_sorted;
-   for (auto& [sel, group] : groups)
+   // Keep the existing lifetime order as a baseline. A degree-first coloring
+   // handles tightly constrained vector groups first; retain it only if it uses
+   // fewer ordinary GPRs. Clause-local temporaries do not consume that budget.
+   LiveRangeMap degree_ranges = lrm;
+   GroupRegisters groups_sorted, degree_sorted;
+   for (auto& [sel, group] : groups) {
       groups_sorted.push(group);
+      Group degree = group;
+      if (degree.priority >= 0) {
+         degree.priority = 1;
+         for (auto reg : degree.channels)
+            if (reg)
+               degree.priority = std::max(degree.priority,
+                  int(interference.row(reg->chan(), reg->index()).size()) + 1);
+      }
+      degree_sorted.push(degree);
+   }
 
-   if (!group_allocation(lrm, interference, groups_sorted))
-      return false;
-
-   scalar_clause_local_allocation(lrm, interference);
-
-   if (!scalar_allocation(lrm, interference))
+   const bool baseline_ok = allocate_registers(lrm, interference, groups_sorted);
+   const bool degree_ok = allocate_registers(degree_ranges, interference, degree_sorted);
+   if (degree_ok && (!baseline_ok || register_count(degree_ranges) < register_count(lrm)))
+      lrm = std::move(degree_ranges);
+   else if (!baseline_ok)
       return false;
 
    for (int i = 0; i < 4; ++i) {

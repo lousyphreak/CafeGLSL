@@ -134,8 +134,6 @@ r600_shader_from_nir(struct r600_context *rctx,
                  << pipeshader->shader.processor_type << "\n";
 
    pipeshader->shader.bc.type = pipeshader->shader.processor_type;
-   if (rctx->b.gfx_level == R700)
-      pipeshader->shader.bc.nlds_dw = sh->info.shared_size/4;
    pipeshader->shader.bc.isa = rctx->isa;
    pipeshader->shader.bc.ngpr = scheduled_shader->required_registers();
 

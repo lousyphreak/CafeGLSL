@@ -85,7 +85,7 @@ bool InsideLoop(nir_block *block, nir_loop *loop)
 // Forward a complete owner-indexed readonly-buffer copy through a shared cache.
 // The cache loop cannot write global memory, so all lanes observe the same source
 // values at the forwarded reads. Other shared-memory patterns keep native LDS.
-bool ForwardReadonlyShared(nir_shader *shader)
+bool OptimizeReadonlyShared(nir_shader *shader)
 {
    auto impl = nir_shader_get_entrypoint(shader);
    nir_intrinsic_instr *store = nullptr;
@@ -125,31 +125,17 @@ bool ForwardReadonlyShared(nir_shader *shader)
    for (auto node = store->instr.block->cf_node.parent; node; node = node->parent)
       if (node->type == nir_cf_node_loop) { loop = nir_cf_node_as_loop(node); break; }
    if (!loop || nir_loop_is_divergent(loop) || !InsideLoop(source->instr.block, loop)) return false;
-   unsigned arithmetic = 0;
    bool all_divergent = true;
    for (auto read : reads) all_divergent &= nir_src_is_divergent(&read->src[0]);
-   nir_foreach_block_in_cf_node(block, &loop->cf_node) {
-      bool consumes = false;
-      for (auto read : reads) consumes |= read->instr.block == block;
-      nir_foreach_instr(instr, block) {
-         if (instr->type == nir_instr_type_alu && consumes) {
-            auto alu = nir_instr_as_alu(instr);
-            if (nir_alu_type_get_base_type(nir_op_infos[alu->op].output_type) == nir_type_float &&
-                alu->op != nir_op_fneg && alu->op != nir_op_fabs && alu->op != nir_op_fsat)
-               arithmetic += alu->def.num_components;
-         }
-         if (instr->type == nir_instr_type_call) return false;
-         if (instr->type != nir_instr_type_intrinsic) continue;
-         auto intr = nir_instr_as_intrinsic(instr);
-         if (intr == store) continue;
-         if (intr->intrinsic == nir_intrinsic_barrier) {
-            if (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared) return false;
-         } else if (!(nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_CAN_ELIMINATE)) return false;
-      }
+   nir_foreach_block_in_cf_node(block, &loop->cf_node) nir_foreach_instr(instr, block) {
+      if (instr->type == nir_instr_type_call) return false;
+      if (instr->type != nir_instr_type_intrinsic) continue;
+      auto intr = nir_instr_as_intrinsic(instr);
+      if (intr == store) continue;
+      if (intr->intrinsic == nir_intrinsic_barrier) {
+         if (nir_intrinsic_memory_modes(intr) & ~nir_var_mem_shared) return false;
+      } else if (!(nir_intrinsic_infos[intr->intrinsic].flags & NIR_INTRINSIC_CAN_ELIMINATE)) return false;
    }
-   // Uniform, low-arithmetic reads benefit from their LDS cache. Divergent
-   // reads already pay WATERFALL; otherwise require work to hide texture latency.
-   if (!all_divergent && arithmetic < 4*n*reads.size()) return false;
    nir_metadata_require(impl, nir_metadata_dominance);
    for (auto read : reads) {
       if (!InsideLoop(read->instr.block, loop) || read->def.num_components != n ||
@@ -157,6 +143,12 @@ bool ForwardReadonlyShared(nir_shader *shader)
           !nir_block_dominates(store->instr.block, read->instr.block) ||
           (store->instr.block == read->instr.block && !nir_instr_is_before(&store->instr, &read->instr))) return false;
    }
+   // Uniform-address caches stay on chip. The native scheduler
+   // replays their owner write in every read clause, making the LDS lifetime
+   // clause-local and allowing several waves without private LDS allocation.
+   bool replay = !all_divergent && scale == 16;
+   for (auto read : reads) replay &= !read->instr.block->divergent;
+   if (replay) return true;
    nir_builder b = nir_builder_create(impl);
    for (auto read : reads) {
       b.cursor = nir_before_instr(&read->instr);
@@ -202,7 +194,9 @@ bool LowerLds(nir_builder *b, nir_instr *instr, void *data)
       auto out = nir_intrinsic_instr_create(b->shader, nir_intrinsic_store_local_shared_r600);
       out->num_components = 4;
       out->src[0] = nir_src_for_ssa(nir_vec(b, values, 4));
-      out->src[1] = nir_src_for_ssa(nir_imm_int(b, (base/1024)*4));
+      // Native DSW control: slot index and owner stride belong to the write,
+      // independently of whether the cache reserves LDS across clauses.
+      out->src[1] = nir_src_for_ssa(nir_imm_int(b, (base/1024)*4 | (stride << 16)));
       nir_intrinsic_set_write_mask(out, mask);
       nir_builder_instr_insert(b, &out->instr);
    } else {
@@ -590,11 +584,15 @@ bool LowerNativeCompute(nir_shader *nir, gl_program *program, GLSLComputeShader 
          return false;
       }
       nir_divergence_analysis(nir);
-      if (!ForwardReadonlyShared(nir)) {
+      bool cached = OptimizeReadonlyShared(nir);
+      if (nir->info.shared_size) {
          // Explicit IO excludes the last vec3's tail padding; hardware slots are vec4.
          nir->info.shared_size = (nir->info.shared_size + 1023) & ~1023u;
          nir_shader_instructions_pass(nir, LowerLds, nir_metadata_none, &error);
          if (!error.empty()) return false;
+         // No wave-private allocation: the proven owner cache is restored within
+         // every non-interruptible LDS read clause instead.
+         if (cached) nir->info.shared_size = 0;
       }
    }
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {

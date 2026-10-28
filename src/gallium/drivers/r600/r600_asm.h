@@ -257,7 +257,6 @@ struct r600_bytecode {
 	unsigned			nalu_groups;
 	unsigned			ngpr;
 	unsigned			nstack;
-	unsigned			nlds_dw;
 	unsigned			nresource;
 	unsigned			force_add_cf;
 	uint32_t			*bytecode;

@@ -479,10 +479,9 @@ Shader::translate_from_nir(nir_shader *nir,
       return nullptr;
    }
 
-   shader->set_info(nir);
-
    shader->set_chip_class(chip_class);
    shader->set_chip_family(family);
+   shader->set_info(nir);
 
    if (!shader->process(nir))
       return nullptr;
@@ -493,6 +492,13 @@ Shader::translate_from_nir(nir_shader *nir,
 void
 Shader::set_info(nir_shader *nir)
 {
+#if defined(CAFE_COMPILER) || defined(__WUT__)
+   // Local LDS intrinsics with no private reservation describe a proven owner
+   // cache whose contents must be restored in each non-interruptible clause.
+   if (m_chip_class == ISA_CC_R700 && nir->info.stage == MESA_SHADER_COMPUTE &&
+       !nir->info.shared_size)
+      set_flag(sh_lds_clause_replay);
+#endif
    m_scratch_size = nir->scratch_size;
 }
 

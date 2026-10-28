@@ -187,8 +187,7 @@ private:
    bool schedule_tex(Shader::ShaderBlocks& out_blocks);
    bool schedule_vtx(Shader::ShaderBlocks& out_blocks);
 
-   template <typename I>
-   bool schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<I *>& ready_list);
+   bool schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<Instr *>& ready_list);
 
    template <typename I>
    bool schedule_cf(Shader::ShaderBlocks& out_blocks, std::list<I *>& ready_list);
@@ -278,6 +277,8 @@ private:
    Block *m_current_block;
 
    int m_lds_addr_count{0};
+   bool m_replay_lds{false};
+   GDSInstr *m_lds_owner_write{nullptr};
    int m_alu_groups_scheduled{0};
    r600_chip_class m_chip_class;
    bool m_idx0_loading{false};
@@ -350,6 +351,7 @@ BlockScheduler::run(Shader *shader)
 {
    Shader::ShaderBlocks scheduled_blocks;
    m_vf = &shader->value_factory();
+   m_replay_lds = shader->has_flag(Shader::sh_lds_clause_replay);
 
    for (auto& block : shader->func()) {
       sfn_log << SfnLog::schedule << "Process block " << block->id() << "\n";
@@ -937,15 +939,26 @@ BlockScheduler::schedule_vtx(Shader::ShaderBlocks& out_blocks)
    return schedule_block(fetches_ready);
 }
 
-template <typename I>
 bool
-BlockScheduler::schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<I *>& ready_list)
+BlockScheduler::schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<Instr *>& ready_list)
 {
-   bool was_full = m_current_block->remaining_slots() == 0;
+   const bool was_full = m_current_block->remaining_slots() == 0;
+   auto first = m_replay_lds ? static_cast<GDSInstr *>(ready_list.front()) : nullptr;
+   if (first && first->opcode() == DS_OP_WRITE)
+      m_lds_owner_write = first;
    if (m_current_block->type() != Block::gds || was_full) {
       start_new_block(out_blocks, Block::gds);
       if (was_full)
          m_current_block->set_instr_flag(Instr::force_cf);
+      if (first && m_lds_owner_write && first->opcode() != DS_OP_WRITE) {
+         // Absolute LDS may be reused by another wave between clauses. Restore
+         // this wave's captured owner values before issuing this clause's reads.
+         auto restore = new GDSInstr(DS_OP_WRITE, m_lds_owner_write->dest_vec(),
+                                    m_lds_owner_write->src(), m_lds_owner_write->resource_id(), nullptr);
+         restore->pin_registers();
+         restore->set_scheduled();
+         m_current_block->push_back(restore);
+      }
    }
    return schedule_block(ready_list);
 }

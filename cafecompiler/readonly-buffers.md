@@ -73,3 +73,10 @@ only the requested components. Reflection uses those selectors rather than the
 cache-fetch byte count: a sixteen-byte fetch can discard its fourth component.
 Mixed-width bindings retain the widest selected component. Scalar graphics buffer descriptors remain format
 13. No buffer repacking, additional allocation, publication or waiting is needed.
+
+## Shared cache lifetime
+
+Proven uniform-address owner caches can retain on-chip LDS without restricting
+residency to one wave: the scheduler restores captured owner values inside each
+protected read clause. Divergent caches still use readonly-buffer forwarding.
+See [cache lifetime and eligibility](lds-caches.md).

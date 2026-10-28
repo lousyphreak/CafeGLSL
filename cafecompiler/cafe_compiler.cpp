@@ -1612,8 +1612,8 @@ GX2ShaderMode CafeCompiler::CompileComputeShader(const char *source, GLSLCompute
                     S_028868_STACK_SIZE(state.pipe_shader.shader.bc.nstack);
    shader.regs[3] = 0x2c003;
    shader.regs[5] = 0x4000; // SQ_DYN_GPR_CNTL_PS_FLUSH_REQ
-   // Absolute LDS addresses are private to the sole resident wave on each SIMD.
-   // Native GX2 enforces this limit through its documented resource allocation.
+   // Cross-clause LDS needs exclusive residency. Proven owner caches instead
+   // restore their contents in each protected clause and need no private reservation.
    shader.wavesPerSimd = state.nir->info.shared_size ? 1 : 0;
    shader.workGroupSizeX = state.nir->info.workgroup_size[0];
    shader.workGroupSizeY = state.nir->info.workgroup_size[1];

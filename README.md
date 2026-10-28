@@ -110,7 +110,8 @@ explicit-LOD and four-offset gathers are diagnosed as unsupported.
 14/15 with the 0x84-byte target descriptor and the existing relocation format.
 WUT's graphics GFD loader does not load these blocks; consumers must implement a
 compute loader. Preserve the complete register image stored in the descriptor.
-`over64Mode` remains zero. LDS kernels set `wavesPerSimd=1`; other kernels leave it zero.
+`over64Mode` remains zero. Persistent cross-clause LDS uses `wavesPerSimd=1`;
+clause-local readonly caches need no private LDS reservation and leave it zero.
 `GX2SetComputeShader` also installs each reflected loop constant in the shared
 vertex/compute loop bank. CafeGLSL supplies `{offset=0, value=0x01000fff}`; preserve
 that reflection when loading GFD. No duplicate raw loop programming is needed;
@@ -134,21 +135,20 @@ writes are independent and can share a clause; each write depends on all precedi
 reads and the previous write. This preserves exchange ordering while allowing
 independent reads and their arithmetic to overlap.
 Shared-only barriers need no CPU operation within the lockstep 64-lane wave.
-Absolute LDS addressing plus `wavesPerSimd=1` keeps separate workgroups private,
-including exchanges spanning multiple clauses. This is a conservative residency
-limit; relative LDS allocation with more resident waves remains future work.
+Shared contents that survive across clauses require `wavesPerSimd=1` to
+keep workgroups private. Proven readonly owner caches instead restore their
+values inside each protected read clause and can run with multiple waves.
 No new renderer flush, allocation, copy, or CPU/GPU wait is required.
 
-A readonly-buffer cache copy can be eliminated before native LDS lowering. The
-compiler proves one complete owner-indexed scalar/vector array initialization,
-a direct readonly source load, replayable lane-address arithmetic, a uniform
-cache loop without global writes or non-shared barriers, and initialization
-dominating every shared read. It then forwards those reads to the original
-unchanged source, preserving payload bits. Other shared-memory uses retain LDS
-and its residency limit. No shader names, application uniforms or force formulas
-participate in this transformation. Arrays with scalar/vec2 stride can be handled
-this way when the entire shared copy disappears; their native LDS layout remains
-unsupported.
+Readonly owner caches require complete initialization, an immutable buffer
+source and a uniform cache loop without intervening global side effects.
+Eligible uniform-address caches with sixteen-byte owner slots use clause-local
+LDS: captured owner values remain in private GPRs and are restored at the
+start of each protected read clause. Divergent or packed caches use readonly
+buffer forwarding where its proof holds. Other shared-memory uses retain
+persistent LDS and its residency limit.
+See [cache lifetime and eligibility](cafecompiler/lds-caches.md)
+for the compiler requirements.
 
 See the [AMD R700 ISA](https://www.amd.com/system/files/TechDocs/R700-Family_Instruction_Set_Architecture.pdf),
 sections 2.6.2, 8 and 10.6, for native LDS instruction constraints.

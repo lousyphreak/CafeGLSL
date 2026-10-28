@@ -117,9 +117,9 @@ int r700_bytecode_fetch_mem_build(struct r600_bytecode *bc, struct r600_bytecode
 		if (opcode == 4) {
 			for (unsigned i = 0; i < 4; ++i)
 				bc->bytecode[id] |= sels[i] << (20 + i*3);
-			/* Absolute per-SIMD storage; the native descriptor limits LDS kernels
-			 * to one resident wave until relative LDS allocation is established. */
-			bc->bytecode[id+1] = mem->array_base | ((bc->nlds_dw/64) << 16);
+			/* Native write control already carries both slot index and stride.
+			 * Clause-local caches do not need a per-wave LDS reservation. */
+			bc->bytecode[id+1] = mem->array_base;
 		} else {
 			bc->bytecode[id] |= (mem->src_sel_x << 20) | (mem->src_sel_y << 23);
 			bc->bytecode[id+1] = mem->dst_gpr | (mem->array_base ? 0 : 1u << 17); /* nonuniform addresses need WATERFALL */

@@ -1504,6 +1504,13 @@ GX2PixelShader *CafeCompiler::CreatePixelShader(CompileState &state,
    return output.release();
 }
 
+GX2ShaderMode CafeCompiler::CompileComputeShader(const char *, GX2ComputeShader *&,
+                                               std::string &diagnostics, GLSL_COMPILER_FLAG)
+{
+   diagnostics = "Compute shader compilation is not implemented";
+   return GLSL_SHADER_MODE_ERROR;
+}
+
 GX2ShaderMode CafeCompiler::CompileShaderPair(const char *vertex_source, const char *pixel_source,
                                                     GLSLCompileMode requested_mode, GX2VertexShader *&vertex_output,
                                                     GX2PixelShader *&pixel_output,

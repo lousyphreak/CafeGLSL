@@ -13,7 +13,7 @@ static void PrintUsage()
    std::cout << "Usage: glslcompiler [options]\n"
              << "  -vs <file>  Compile a vertex shader\n"
              << "  -ps <file>  Compile a pixel shader\n"
-             << "  -cs <file>  Compile a compute shader (not implemented yet)\n"
+             << "  -cs <file>  Compile a compute shader\n"
              << "  -o <file>   Write a GFD .gsh file\n"
              << "  -v          Print R600 disassembly\n"
              << "  --uniform-mode <auto|register|block>\n"

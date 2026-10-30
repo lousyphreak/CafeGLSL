@@ -56,6 +56,9 @@ private:
    GX2PixelShader *CreatePixelShader(CompileState &state,
                                      std::string &diagnostics,
                                      GLSL_COMPILER_FLAG flags);
+   GX2ComputeShader *CreateComputeShader(CompileState &state,
+                                         std::string &diagnostics,
+                                         GLSL_COMPILER_FLAG flags);
 
    gl_context *m_ctx = nullptr;
    nir_shader_compiler_options *m_nir_options = nullptr;

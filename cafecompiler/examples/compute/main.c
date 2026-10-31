@@ -23,12 +23,18 @@ void
 GX2SetShaderExportBuffer(void *buffer, uint32_t size);
 void
 GX2DispatchCompute(const uint32_t *groups);
+void
+GX2SetComputeUniformBlock(uint32_t location, uint32_t size, const void *data);
 
 static uint32_t sOutput[16384] __attribute__((aligned(256)));
 static uint32_t sGroups[4] __attribute__((aligned(256))) = {2, 3, 2, 0};
+static uint32_t sParameters[64] __attribute__((aligned(256)));
+static const uint32_t sElementCount = 1537;
+static const uint32_t sMultiplier   = 3;
+static const uint32_t sOffset       = 7;
 
 static int
-LoadShader(const char *path, GX2ComputeShader *shader)
+LoadShader(const char *path, GX2ComputeShader *shader, uint8_t **metadata)
 {
    FILE *file = fopen(path, "rb");
    uint32_t header[8];
@@ -41,30 +47,27 @@ LoadShader(const char *path, GX2ComputeShader *shader)
    while (fread(header, sizeof(header), 1, file) == 1) {
       if (header[4] == 14 && header[7] == 0) {
          GX2ComputeShader serialized;
-         if (fread(&serialized, sizeof(serialized), 1, file) != 1) {
+         *metadata = malloc(header[5]);
+         if (!*metadata || fread(*metadata, header[5], 1, file) != 1) {
             break;
          }
-         if (serialized.uniformBlockCount || serialized.uniformVarCount ||
-             serialized.initialValueCount || serialized.samplerVarCount) {
+         memcpy(&serialized, *metadata, sizeof(serialized));
+         if (serialized.initialValueCount || serialized.samplerVarCount) {
             break;
          }
-         *shader          = serialized;
-         shader->program  = NULL;
-         shader->loopVars = NULL;
-         long end         = ftell(file) + header[5] - sizeof(*shader);
-         if (shader->loopVarCount) {
-            long start       = ftell(file) - sizeof(*shader);
-            uint32_t offset  = (uint32_t)serialized.loopVars & 0xfffff;
-            shader->loopVars = malloc(shader->loopVarCount * sizeof(GX2LoopVar));
-            if (!shader->loopVars) {
-               break;
-            }
-            fseek(file, start + offset, SEEK_SET);
-            if (fread(shader->loopVars, sizeof(GX2LoopVar), shader->loopVarCount, file) != shader->loopVarCount) {
-               break;
-            }
+         *shader               = serialized;
+         shader->program       = NULL;
+         shader->uniformBlocks = shader->uniformBlockCount ? (GX2UniformBlock *)(*metadata + ((uint32_t)serialized.uniformBlocks & 0xfffff)) : NULL;
+         shader->uniformVars   = shader->uniformVarCount ? (GX2UniformVar *)(*metadata + ((uint32_t)serialized.uniformVars & 0xfffff)) : NULL;
+         shader->loopVars      = shader->loopVarCount ? (GX2LoopVar *)(*metadata + ((uint32_t)serialized.loopVars & 0xfffff)) : NULL;
+         for (unsigned i = 0; i < shader->uniformBlockCount; ++i) {
+            shader->uniformBlocks[i].name = (const char *)(*metadata +
+                                                           ((uint32_t)shader->uniformBlocks[i].name & 0xfffff));
          }
-         fseek(file, end, SEEK_SET);
+         for (unsigned i = 0; i < shader->uniformVarCount; ++i) {
+            shader->uniformVars[i].name = (const char *)(*metadata +
+                                                         ((uint32_t)shader->uniformVars[i].name & 0xfffff));
+         }
       } else if (header[4] == 15 && header[7] == 0) {
          shader->program = memalign(256, header[5]);
          if (shader->program) {
@@ -85,6 +88,7 @@ int
 main(int argc, char **argv)
 {
    GX2ComputeShader shader = {0};
+   uint8_t *metadata       = NULL;
    char path[512]          = "SD card not mounted";
    unsigned mismatches     = 0;
    int result              = 1;
@@ -103,11 +107,21 @@ main(int argc, char **argv)
       if (argc > 1) {
          snprintf(path, sizeof(path), "%s", argv[1]);
       }
-      if (LoadShader(path, &shader)) {
+      if (LoadShader(path, &shader, &metadata)) {
          unsigned localInvocations                              = shader.workgroupSizeX * shader.workgroupSizeY * shader.workgroupSizeZ;
          unsigned waves                                         = (localInvocations + 63) / 64;
          uint32_t nativeGroups[4] __attribute__((aligned(256))) = {
             sGroups[0] * waves, sGroups[1], sGroups[2], 0};
+         for (unsigned i = 0; i < shader.uniformVarCount; ++i) {
+            const GX2UniformVar *uniform = &shader.uniformVars[i];
+            if (!strcmp(uniform->name, "count")) {
+               sParameters[uniform->offset] = __builtin_bswap32(sElementCount);
+            } else if (!strcmp(uniform->name, "multiplier")) {
+               sParameters[uniform->offset] = __builtin_bswap32(sMultiplier);
+            } else if (!strcmp(uniform->name, "offset")) {
+               sParameters[uniform->offset] = __builtin_bswap32(sOffset);
+            }
+         }
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i] = __builtin_bswap32(0xdeadbeef);
          }
@@ -116,6 +130,11 @@ main(int argc, char **argv)
          GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, shader.program, shader.size);
          GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
          GX2SetComputeShader(&shader);
+         GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK,
+                       sParameters, sizeof(sParameters));
+         for (unsigned i = 0; i < shader.uniformBlockCount; ++i) {
+            GX2SetComputeUniformBlock(shader.uniformBlocks[i].offset, sizeof(sParameters), sParameters);
+         }
          GX2SetShaderExportBuffer(sOutput, sizeof(sOutput));
          GX2DispatchCompute(nativeGroups);
          GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, sOutput, sizeof(sOutput));
@@ -127,7 +146,7 @@ main(int argc, char **argv)
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i]        = __builtin_bswap32(sOutput[i]);
             uint32_t expected = 0xdeadbeef;
-            if (i < invocations) {
+            if (i < invocations && i < sElementCount) {
                unsigned x     = i % width;
                unsigned y     = (i / width) % height;
                unsigned z     = i / (width * height);
@@ -136,6 +155,7 @@ main(int argc, char **argv)
                unsigned group = x / shader.workgroupSizeX + sGroups[0] *
                                                                (y / shader.workgroupSizeY + sGroups[1] * (z / shader.workgroupSizeZ));
                expected       = local + localInvocations * group + 65536u * sGroups[2];
+               expected       = expected * sMultiplier + sOffset;
             }
             mismatches += sOutput[i] != expected;
          }
@@ -147,7 +167,7 @@ main(int argc, char **argv)
       WHBUnmountSdCard();
    }
    free(shader.program);
-   free(shader.loopVars);
+   free(metadata);
 
    GX2Shutdown();
    free(commands);
@@ -158,6 +178,7 @@ main(int argc, char **argv)
    } else {
       WHBLogPrintf("Workgroup: %u,%u,%u", shader.workgroupSizeX, shader.workgroupSizeY, shader.workgroupSizeZ);
       WHBLogPrintf("Dispatch: %u,%u,%u", sGroups[0], sGroups[1], sGroups[2]);
+      WHBLogPrintf("Parameters: count=%u, multiplier=%u, offset=%u", sElementCount, sMultiplier, sOffset);
       WHBLogPrintf("%s: %u mismatches", mismatches ? "FAIL" : "PASS", mismatches);
       for (unsigned i = 0; i < 64; i += 8) {
          WHBLogPrintf("%2u: %u %u %u %u %u %u %u %u", i,

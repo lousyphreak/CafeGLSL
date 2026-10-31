@@ -3,6 +3,11 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 0) writeonly buffer Output {
    uint values[16384];
 };
+layout(std140, binding = 2) uniform Parameters {
+   uint count;
+   uint multiplier;
+   uint offset;
+};
 void main()
 {
    uvec3 size = gl_NumWorkGroups * gl_WorkGroupSize;
@@ -11,5 +16,7 @@ void main()
    uint group = gl_WorkGroupID.x + gl_NumWorkGroups.x *
       (gl_WorkGroupID.y + gl_NumWorkGroups.y * gl_WorkGroupID.z);
    uint invocations = gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z;
-   values[i] = gl_LocalInvocationIndex + invocations * group + 65536u * gl_NumWorkGroups.z;
+   if (i < count)
+      values[i] = (gl_LocalInvocationIndex + invocations * group +
+                   65536u * gl_NumWorkGroups.z) * multiplier + offset;
 }

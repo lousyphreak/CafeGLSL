@@ -1204,6 +1204,10 @@ bool CafeCompiler::InitializeContext()
    m_ctx->Const.MaxShaderStorageBlockSize = UINT_MAX;
    m_ctx->Const.MaxCombinedShaderStorageBlocks = 1;
    m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxShaderStorageBlocks = 1;
+   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformBlocks = kMaxUniformBlocks;
+   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformComponents = 16 * 1024;
+   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxCombinedUniformComponents =
+      kMaxUniformBlocks * 16 * 1024;
 
    m_ctx->Version = 45;
    m_ctx->Extensions.Version = 45;
@@ -1399,7 +1403,8 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
 
    /* GX2 selects one constant file for the draw, shared by both stages. */
    state.lower_loose_uniforms = state.uses_loose_uniforms &&
-                               state.mode == GX2_SHADER_MODE_UNIFORM_BLOCK;
+                               (state.mode == GX2_SHADER_MODE_UNIFORM_BLOCK ||
+                                state.mode == GX2_SHADER_MODE_COMPUTE_SHADER);
    state.requirement = state.mode;
 
    if (state.lower_loose_uniforms) {

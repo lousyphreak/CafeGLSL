@@ -3,7 +3,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 1) readonly buffer Input {
    uint inputValues[16384];
 };
-layout(std430, binding = 0) writeonly buffer Output {
+layout(std430, binding = 7) writeonly buffer Output {
    uint values[16384];
 };
 layout(std140, binding = 2) uniform Parameters {

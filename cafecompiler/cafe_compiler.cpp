@@ -1481,6 +1481,7 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
    nir_shader_gather_info(state.nir, nir_shader_get_entrypoint(state.nir));
    r600_finalize_nir_common(state.nir, R700);
    if (state.stage == MESA_SHADER_COMPUTE) {
+      int output_binding = -1;
       nir_foreach_function_impl(impl, state.nir) {
          nir_foreach_block(block, impl) {
             nir_foreach_instr(instr, block) {
@@ -1501,16 +1502,19 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
                }
                const unsigned index = nir_src_as_uint(intrinsic->src[source]);
                const unsigned binding = state.program->sh.ShaderStorageBlocks[index]->Binding;
-               if (store && binding != 0) {
-                  diagnostics = "Compute shader storage buffer writes require binding 0";
-                  return false;
+               if (store) {
+                  if (output_binding >= 0 && output_binding != static_cast<int>(binding)) {
+                     diagnostics = "Compute shaders support only one storage buffer output";
+                     return false;
+                  }
+                  output_binding = binding;
                }
                if (!store && !(nir_intrinsic_access(intrinsic) & ACCESS_NON_WRITEABLE)) {
                   diagnostics = "Compute shader storage buffer reads must be readonly";
                   return false;
                }
                nir_builder builder = nir_builder_at(nir_before_instr(instr));
-               nir_src_rewrite(&intrinsic->src[source], nir_imm_int(&builder, binding));
+               nir_src_rewrite(&intrinsic->src[source], nir_imm_int(&builder, store ? 0 : binding));
             }
          }
       }

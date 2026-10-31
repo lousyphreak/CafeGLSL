@@ -24,8 +24,8 @@ GX2SetShaderExportBuffer(void *buffer, uint32_t size);
 void
 GX2DispatchCompute(const uint32_t *groups);
 
-static uint32_t sOutput[128] __attribute__((aligned(256)));
-static uint32_t sGroups[4] __attribute__((aligned(256))) = {1, 1, 1, 0};
+static uint32_t sOutput[1024] __attribute__((aligned(256)));
+static uint32_t sGroups[4] __attribute__((aligned(256))) = {2, 3, 2, 0};
 
 static int
 LoadShader(const char *path, GX2ComputeShader *shader)
@@ -117,14 +117,21 @@ main(int argc, char **argv)
          GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, sOutput, sizeof(sOutput));
          GX2DrawDone();
          DCInvalidateRange(sOutput, sizeof(sOutput));
-         unsigned invocations = shader.workgroupSizeX * shader.workgroupSizeY * shader.workgroupSizeZ;
+         unsigned width       = sGroups[0] * shader.workgroupSizeX;
+         unsigned height      = sGroups[1] * shader.workgroupSizeY;
+         unsigned invocations = width * height * sGroups[2] * shader.workgroupSizeZ;
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i]        = __builtin_bswap32(sOutput[i]);
             uint32_t expected = 0xdeadbeef;
             if (i < invocations) {
-               expected = i % shader.workgroupSizeX +
-                          10u * ((i / shader.workgroupSizeX) % shader.workgroupSizeY) +
-                          100u * (i / (shader.workgroupSizeX * shader.workgroupSizeY));
+               unsigned x     = i % width;
+               unsigned y     = (i / width) % height;
+               unsigned z     = i / (width * height);
+               unsigned local = x % shader.workgroupSizeX + shader.workgroupSizeX *
+                                                               (y % shader.workgroupSizeY + shader.workgroupSizeY * (z % shader.workgroupSizeZ));
+               unsigned group = x / shader.workgroupSizeX + sGroups[0] *
+                                                               (y / shader.workgroupSizeY + sGroups[1] * (z / shader.workgroupSizeZ));
+               expected       = local + 64u * group + 65536u * sGroups[2];
             }
             mismatches += sOutput[i] != expected;
          }
@@ -146,6 +153,7 @@ main(int argc, char **argv)
       WHBLogPrintf("Could not load the compute shader.");
    } else {
       WHBLogPrintf("Workgroup: %u,%u,%u", shader.workgroupSizeX, shader.workgroupSizeY, shader.workgroupSizeZ);
+      WHBLogPrintf("Dispatch: %u,%u,%u", sGroups[0], sGroups[1], sGroups[2]);
       WHBLogPrintf("%s: %u mismatches", mismatches ? "FAIL" : "PASS", mismatches);
       for (unsigned i = 0; i < 64; i += 8) {
          WHBLogPrintf("%2u: %u %u %u %u %u %u %u %u", i,

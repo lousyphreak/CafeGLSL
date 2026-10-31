@@ -1062,6 +1062,13 @@ static void RemapLatteResources(r600_bytecode &bytecode)
            vtx_node = vtx_node->next) {
          auto *vertex_fetch = reinterpret_cast<r600_bytecode_vtx *>(
             reinterpret_cast<char *>(vtx_node) - offsetof(r600_bytecode_vtx, list));
+         if (bytecode.type == MESA_SHADER_COMPUTE &&
+             vertex_fetch->buffer_id == R600_BUFFER_INFO_CONST_BUFFER &&
+             vertex_fetch->offset == 16) {
+            vertex_fetch->buffer_id = 147;
+            vertex_fetch->offset = 0;
+            vertex_fetch->use_const_fields = 1;
+         }
          if (vertex_fetch->buffer_id < kMaxUniformBlocks)
             vertex_fetch->buffer_id += kLatteResourceBase;
       }
@@ -1071,25 +1078,28 @@ static void RemapLatteResources(r600_bytecode &bytecode)
 static bool LowerComputeSystemValue(nir_builder *builder, nir_intrinsic_instr *intrinsic, void *)
 {
    if (intrinsic->intrinsic != nir_intrinsic_load_local_invocation_id &&
-       intrinsic->intrinsic != nir_intrinsic_load_local_invocation_index &&
-       intrinsic->intrinsic != nir_intrinsic_load_workgroup_size)
+       intrinsic->intrinsic != nir_intrinsic_load_workgroup_id)
       return false;
 
    builder->cursor = nir_before_instr(&intrinsic->instr);
    const auto &size = builder->shader->info.workgroup_size;
+   nir_def *index = nir_channel(builder, nir_load_local_invocation_id(builder), 0);
    nir_def *value;
-   if (intrinsic->intrinsic == nir_intrinsic_load_workgroup_size) {
-      value = nir_imm_ivec3(builder, size[0], size[1], size[2]);
+   if (intrinsic->intrinsic == nir_intrinsic_load_workgroup_id) {
+      index = nir_ushr_imm(builder, index, 6);
+      nir_def *count = nir_load_num_workgroups(builder);
+      nir_def *x = nir_channel(builder, count, 0);
+      nir_def *y = nir_channel(builder, count, 1);
+      value = nir_vec3(builder,
+         nir_umod(builder, index, x),
+         nir_umod(builder, nir_udiv(builder, index, x), y),
+         nir_udiv(builder, index, nir_imul(builder, x, y)));
    } else {
-      nir_def *index = nir_iand_imm(builder,
-         nir_channel(builder, nir_load_local_invocation_id(builder), 0), 63);
-      value = index;
-      if (intrinsic->intrinsic == nir_intrinsic_load_local_invocation_id) {
-         value = nir_vec3(builder,
-            nir_umod_imm(builder, index, size[0]),
-            nir_umod_imm(builder, nir_udiv_imm(builder, index, size[0]), size[1]),
-            nir_udiv_imm(builder, index, size[0] * size[1]));
-      }
+      index = nir_iand_imm(builder, index, 63);
+      value = nir_vec3(builder,
+         nir_umod_imm(builder, index, size[0]),
+         nir_umod_imm(builder, nir_udiv_imm(builder, index, size[0]), size[1]),
+         nir_udiv_imm(builder, index, size[0] * size[1]));
    }
    nir_def_rewrite_uses(&intrinsic->def, value);
    nir_instr_remove(&intrinsic->instr);
@@ -1414,6 +1424,8 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
          diagnostics = "Variable compute workgroup sizes are not supported yet";
          return false;
       }
+      nir_lower_compute_system_values_options options = {};
+      NIR_PASS(_, state.nir, nir_lower_compute_system_values, &options);
       NIR_PASS(_, state.nir, nir_shader_intrinsics_pass, LowerComputeSystemValue,
                nir_metadata_control_flow, nullptr);
       const auto &size = state.nir->info.workgroup_size;

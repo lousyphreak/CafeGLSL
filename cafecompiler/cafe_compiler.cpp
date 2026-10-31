@@ -1078,28 +1078,34 @@ static void RemapLatteResources(r600_bytecode &bytecode)
 static bool LowerComputeSystemValue(nir_builder *builder, nir_intrinsic_instr *intrinsic, void *)
 {
    if (intrinsic->intrinsic != nir_intrinsic_load_local_invocation_id &&
-       intrinsic->intrinsic != nir_intrinsic_load_workgroup_id)
+       intrinsic->intrinsic != nir_intrinsic_load_workgroup_id &&
+       intrinsic->intrinsic != nir_intrinsic_load_num_workgroups)
       return false;
 
    builder->cursor = nir_before_instr(&intrinsic->instr);
    const auto &size = builder->shader->info.workgroup_size;
+   const unsigned waves = DIV_ROUND_UP(size[0] * size[1] * size[2], 64);
    nir_def *index = nir_channel(builder, nir_load_local_invocation_id(builder), 0);
    nir_def *value;
-   if (intrinsic->intrinsic == nir_intrinsic_load_workgroup_id) {
-      index = nir_ushr_imm(builder, index, 6);
-      nir_def *count = nir_load_num_workgroups(builder);
-      nir_def *x = nir_channel(builder, count, 0);
-      nir_def *y = nir_channel(builder, count, 1);
-      value = nir_vec3(builder,
-         nir_umod(builder, index, x),
-         nir_umod(builder, nir_udiv(builder, index, x), y),
-         nir_udiv(builder, index, nir_imul(builder, x, y)));
-   } else {
-      index = nir_iand_imm(builder, index, 63);
+   if (intrinsic->intrinsic == nir_intrinsic_load_local_invocation_id) {
+      index = nir_umod_imm(builder, index, 64 * waves);
       value = nir_vec3(builder,
          nir_umod_imm(builder, index, size[0]),
          nir_umod_imm(builder, nir_udiv_imm(builder, index, size[0]), size[1]),
          nir_udiv_imm(builder, index, size[0] * size[1]));
+   } else {
+      nir_def *count = nir_load_num_workgroups(builder);
+      nir_def *x = nir_udiv_imm(builder, nir_channel(builder, count, 0), waves);
+      nir_def *y = nir_channel(builder, count, 1);
+      if (intrinsic->intrinsic == nir_intrinsic_load_num_workgroups) {
+         value = nir_vec3(builder, x, y, nir_channel(builder, count, 2));
+      } else {
+         index = nir_udiv_imm(builder, index, 64 * waves);
+         value = nir_vec3(builder,
+            nir_umod(builder, index, x),
+            nir_umod(builder, nir_udiv(builder, index, x), y),
+            nir_udiv(builder, index, nir_imul(builder, x, y)));
+      }
    }
    nir_def_rewrite_uses(&intrinsic->def, value);
    nir_instr_remove(&intrinsic->instr);
@@ -1194,7 +1200,6 @@ bool CafeCompiler::InitializeContext()
    m_ctx->screen->nir_options[MESA_SHADER_VERTEX] = m_nir_options;
    m_ctx->screen->nir_options[MESA_SHADER_FRAGMENT] = m_nir_options;
    m_ctx->screen->nir_options[MESA_SHADER_COMPUTE] = m_nir_options;
-   m_ctx->Const.MaxComputeWorkGroupInvocations = 64;
    m_ctx->Const.MaxShaderStorageBufferBindings = 1;
    m_ctx->Const.MaxShaderStorageBlockSize = UINT_MAX;
    m_ctx->Const.MaxCombinedShaderStorageBlocks = 1;
@@ -1430,13 +1435,14 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
                nir_metadata_control_flow, nullptr);
       const auto &size = state.nir->info.workgroup_size;
       const unsigned invocations = size[0] * size[1] * size[2];
-      if (invocations < 64) {
+      const unsigned padded_invocations = DIV_ROUND_UP(invocations, 64) * 64;
+      if (invocations != padded_invocations) {
          nir_function_impl *impl = nir_shader_get_entrypoint(state.nir);
          nir_cf_list body;
          nir_cf_extract(&body, nir_before_impl(impl), nir_after_impl(impl));
          nir_builder builder = nir_builder_at(nir_before_impl(impl));
-         nir_def *index = nir_iand_imm(&builder,
-            nir_channel(&builder, nir_load_local_invocation_id(&builder), 0), 63);
+         nir_def *index = nir_umod_imm(&builder,
+            nir_channel(&builder, nir_load_local_invocation_id(&builder), 0), padded_invocations);
          nir_push_if(&builder, nir_ult_imm(&builder, index, invocations));
          builder.cursor = nir_cf_reinsert(&body, builder.cursor);
          nir_pop_if(&builder, nullptr);

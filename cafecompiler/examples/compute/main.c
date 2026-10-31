@@ -24,7 +24,7 @@ GX2SetShaderExportBuffer(void *buffer, uint32_t size);
 void
 GX2DispatchCompute(const uint32_t *groups);
 
-static uint32_t sOutput[1024] __attribute__((aligned(256)));
+static uint32_t sOutput[16384] __attribute__((aligned(256)));
 static uint32_t sGroups[4] __attribute__((aligned(256))) = {2, 3, 2, 0};
 
 static int
@@ -104,16 +104,20 @@ main(int argc, char **argv)
          snprintf(path, sizeof(path), "%s", argv[1]);
       }
       if (LoadShader(path, &shader)) {
+         unsigned localInvocations                              = shader.workgroupSizeX * shader.workgroupSizeY * shader.workgroupSizeZ;
+         unsigned waves                                         = (localInvocations + 63) / 64;
+         uint32_t nativeGroups[4] __attribute__((aligned(256))) = {
+            sGroups[0] * waves, sGroups[1], sGroups[2], 0};
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i] = __builtin_bswap32(0xdeadbeef);
          }
          DCFlushRange(sOutput, sizeof(sOutput));
-         DCFlushRange(sGroups, sizeof(sGroups));
+         DCFlushRange(nativeGroups, sizeof(nativeGroups));
          GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, shader.program, shader.size);
          GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
          GX2SetComputeShader(&shader);
          GX2SetShaderExportBuffer(sOutput, sizeof(sOutput));
-         GX2DispatchCompute(sGroups);
+         GX2DispatchCompute(nativeGroups);
          GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, sOutput, sizeof(sOutput));
          GX2DrawDone();
          DCInvalidateRange(sOutput, sizeof(sOutput));
@@ -131,7 +135,7 @@ main(int argc, char **argv)
                                                                (y % shader.workgroupSizeY + shader.workgroupSizeY * (z % shader.workgroupSizeZ));
                unsigned group = x / shader.workgroupSizeX + sGroups[0] *
                                                                (y / shader.workgroupSizeY + sGroups[1] * (z / shader.workgroupSizeZ));
-               expected       = local + 64u * group + 65536u * sGroups[2];
+               expected       = local + localInvocations * group + 65536u * sGroups[2];
             }
             mismatches += sOutput[i] != expected;
          }

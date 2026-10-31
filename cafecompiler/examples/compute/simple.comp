@@ -1,7 +1,7 @@
 #version 430
-layout(local_size_x = 8, local_size_y = 8) in;
+layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 0) writeonly buffer Output {
-   uint values[1024];
+   uint values[16384];
 };
 void main()
 {
@@ -10,5 +10,6 @@ void main()
       (gl_GlobalInvocationID.y + size.y * gl_GlobalInvocationID.z);
    uint group = gl_WorkGroupID.x + gl_NumWorkGroups.x *
       (gl_WorkGroupID.y + gl_NumWorkGroups.y * gl_WorkGroupID.z);
-   values[i] = gl_LocalInvocationIndex + 64u * group + 65536u * gl_NumWorkGroups.z;
+   uint invocations = gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z;
+   values[i] = gl_LocalInvocationIndex + invocations * group + 65536u * gl_NumWorkGroups.z;
 }

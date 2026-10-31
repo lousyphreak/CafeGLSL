@@ -3,6 +3,7 @@
 #include <coreinit/cache.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <gx2/draw.h>
 #include <gx2/event.h>
 #include <gx2/mem.h>
 #include <gx2/shaders.h>
@@ -27,6 +28,7 @@ void
 GX2SetComputeUniformBlock(uint32_t location, uint32_t size, const void *data);
 
 static uint32_t sOutput[16384] __attribute__((aligned(256)));
+static uint32_t sInput[16384] __attribute__((aligned(256)));
 static uint32_t sGroups[4] __attribute__((aligned(256))) = {2, 3, 2, 0};
 static uint32_t sParameters[64] __attribute__((aligned(256)));
 static const uint32_t sElementCount = 1537;
@@ -124,6 +126,7 @@ main(int argc, char **argv)
          }
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i] = __builtin_bswap32(0xdeadbeef);
+            sInput[i]  = __builtin_bswap32(0x90203040u ^ (17u * i + 13u));
          }
          DCFlushRange(sOutput, sizeof(sOutput));
          DCFlushRange(nativeGroups, sizeof(nativeGroups));
@@ -135,27 +138,19 @@ main(int argc, char **argv)
          for (unsigned i = 0; i < shader.uniformBlockCount; ++i) {
             GX2SetComputeUniformBlock(shader.uniformBlocks[i].offset, sizeof(sParameters), sParameters);
          }
+         GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, sInput, sizeof(sInput));
+         GX2SetAttribBuffer(1, sizeof(sInput), sizeof(sInput[0]), sInput);
          GX2SetShaderExportBuffer(sOutput, sizeof(sOutput));
          GX2DispatchCompute(nativeGroups);
          GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, sOutput, sizeof(sOutput));
          GX2DrawDone();
          DCInvalidateRange(sOutput, sizeof(sOutput));
-         unsigned width       = sGroups[0] * shader.workgroupSizeX;
-         unsigned height      = sGroups[1] * shader.workgroupSizeY;
-         unsigned invocations = width * height * sGroups[2] * shader.workgroupSizeZ;
+         unsigned invocations = localInvocations * sGroups[0] * sGroups[1] * sGroups[2];
          for (unsigned i = 0; i < sizeof(sOutput) / sizeof(sOutput[0]); ++i) {
             sOutput[i]        = __builtin_bswap32(sOutput[i]);
             uint32_t expected = 0xdeadbeef;
             if (i < invocations && i < sElementCount) {
-               unsigned x     = i % width;
-               unsigned y     = (i / width) % height;
-               unsigned z     = i / (width * height);
-               unsigned local = x % shader.workgroupSizeX + shader.workgroupSizeX *
-                                                               (y % shader.workgroupSizeY + shader.workgroupSizeY * (z % shader.workgroupSizeZ));
-               unsigned group = x / shader.workgroupSizeX + sGroups[0] *
-                                                               (y / shader.workgroupSizeY + sGroups[1] * (z / shader.workgroupSizeZ));
-               expected       = local + localInvocations * group + 65536u * sGroups[2];
-               expected       = expected * sMultiplier + sOffset;
+               expected = __builtin_bswap32(sInput[i]) * sMultiplier + sOffset;
             }
             mismatches += sOutput[i] != expected;
          }

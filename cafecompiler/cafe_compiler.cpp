@@ -49,9 +49,11 @@
 #include <vector>
 
 constexpr unsigned kMaxUniformBlocks = 16;
+constexpr unsigned kMaxStorageBuffers = 16;
 constexpr unsigned kMaxAluConstComponents = 1024;
 constexpr unsigned kMaxSamplers = 18;
 constexpr unsigned kLatteResourceBase = 0x80;
+constexpr unsigned kLatteAttributeResourceBase = 0xa0;
 constexpr const char *kDefaultUniformBlockName = "__cafe_loose_uniforms";
 constexpr unsigned kDefaultUniformBlockBinding = 0;
 
@@ -1069,6 +1071,11 @@ static void RemapLatteResources(r600_bytecode &bytecode)
             vertex_fetch->offset = 0;
             vertex_fetch->use_const_fields = 1;
          }
+         if (bytecode.type == MESA_SHADER_COMPUTE &&
+             vertex_fetch->buffer_id >= R600_IMAGE_REAL_RESOURCE_OFFSET &&
+             vertex_fetch->buffer_id < R600_IMAGE_REAL_RESOURCE_OFFSET + kMaxStorageBuffers)
+            vertex_fetch->buffer_id = kLatteAttributeResourceBase +
+               vertex_fetch->buffer_id - R600_IMAGE_REAL_RESOURCE_OFFSET;
          if (vertex_fetch->buffer_id < kMaxUniformBlocks)
             vertex_fetch->buffer_id += kLatteResourceBase;
       }
@@ -1200,10 +1207,10 @@ bool CafeCompiler::InitializeContext()
    m_ctx->screen->nir_options[MESA_SHADER_VERTEX] = m_nir_options;
    m_ctx->screen->nir_options[MESA_SHADER_FRAGMENT] = m_nir_options;
    m_ctx->screen->nir_options[MESA_SHADER_COMPUTE] = m_nir_options;
-   m_ctx->Const.MaxShaderStorageBufferBindings = 1;
+   m_ctx->Const.MaxShaderStorageBufferBindings = kMaxStorageBuffers;
    m_ctx->Const.MaxShaderStorageBlockSize = UINT_MAX;
-   m_ctx->Const.MaxCombinedShaderStorageBlocks = 1;
-   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxShaderStorageBlocks = 1;
+   m_ctx->Const.MaxCombinedShaderStorageBlocks = kMaxStorageBuffers;
+   m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxShaderStorageBlocks = kMaxStorageBuffers;
    m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformBlocks = kMaxUniformBlocks;
    m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformComponents = 16 * 1024;
    m_ctx->Const.Program[MESA_SHADER_COMPUTE].MaxCombinedUniformComponents =
@@ -1477,14 +1484,37 @@ bool CafeCompiler::PrepareNir(CompileState &state, std::string &diagnostics)
       nir_foreach_function_impl(impl, state.nir) {
          nir_foreach_block(block, impl) {
             nir_foreach_instr(instr, block) {
-               if (instr->type == nir_instr_type_intrinsic &&
-                   nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_ssbo) {
-                  diagnostics = "Compute shader storage buffer reads are not supported yet";
+               if (instr->type != nir_instr_type_intrinsic)
+                  continue;
+               auto *intrinsic = nir_instr_as_intrinsic(instr);
+               if (intrinsic->intrinsic == nir_intrinsic_get_ssbo_size) {
+                  diagnostics = "Compute shader storage buffer size queries are not supported yet";
                   return false;
                }
+               const bool store = intrinsic->intrinsic == nir_intrinsic_store_ssbo;
+               if (!store && intrinsic->intrinsic != nir_intrinsic_load_ssbo)
+                  continue;
+               const unsigned source = store ? 1 : 0;
+               if (!nir_src_is_const(intrinsic->src[source])) {
+                  diagnostics = "Dynamic storage buffer selection is not supported yet";
+                  return false;
+               }
+               const unsigned index = nir_src_as_uint(intrinsic->src[source]);
+               const unsigned binding = state.program->sh.ShaderStorageBlocks[index]->Binding;
+               if (store && binding != 0) {
+                  diagnostics = "Compute shader storage buffer writes require binding 0";
+                  return false;
+               }
+               if (!store && !(nir_intrinsic_access(intrinsic) & ACCESS_NON_WRITEABLE)) {
+                  diagnostics = "Compute shader storage buffer reads must be readonly";
+                  return false;
+               }
+               nir_builder builder = nir_builder_at(nir_before_instr(instr));
+               nir_src_rewrite(&intrinsic->src[source], nir_imm_int(&builder, binding));
             }
          }
       }
+      nir_metadata_invalidate(state.nir);
    }
    return true;
 }
